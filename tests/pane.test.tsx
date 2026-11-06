@@ -6,7 +6,7 @@ const PANE = {
   component: 'Pane',
   requestId: 'git-workspace',
   props: {
-    title: 'Git 워크스페이스',
+    title: 'Git Workspace',
     isFocused: false,
     bodyColumns: 48,
     placement: 'dock',
@@ -66,10 +66,10 @@ test('without git the pane says so, links the download, and still shows where re
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'refresh' })
-    expect(await ui.find({ type: 'Text', text: /git을 찾을 수 없습니다/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /git wasn't found/ })).toBeTruthy()
     expect(await ui.find({ type: 'Button', key: 'git-recheck' })).toBeTruthy()
     expect(await ui.find({ type: 'Link' })).toBeTruthy()
-    expect(await ui.find({ type: 'Text', text: /저장소 3/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /3 repos/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /group/ })).toBeTruthy()
     expect(await ui.find({ type: 'Text', text: /⎇/ })).toBeUndefined()
     await ui.unmount()
@@ -81,7 +81,7 @@ test('an old git is named with the version it needs', async ($, on) => {
   await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /2\.20\.1.*2\.26 이상 필요/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /git 2\.20\.1 is too old \(2\.26 or newer needed\)/ })).toBeTruthy()
   await ui.unmount()
 })
 
@@ -99,7 +99,7 @@ test('the tree and the menu draw on desktop and terminal', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /↑1/ })).toBeTruthy()
     // open the ⋯ menu: settings and the legend appear
     await ui.press({ key: 'menu' })
-    expect(await ui.find({ type: 'Text', text: /깊이/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /Depth/ })).toBeTruthy()
     expect(await ui.find({ type: 'Button', key: 'recent:D:/old/place' })).toBeTruthy()
     // row actions: hover overlay on desktop, inline (menu open) on the terminal — reachable either way
     expect(await ui.find({ type: 'Button', key: 'root:/ws/group' })).toBeTruthy()
@@ -107,4 +107,28 @@ test('the tree and the menu draw on desktop and terminal', async ($, on) => {
     await ui.press({ key: 'menu' })
     await ui.unmount()
   }
+})
+
+test('the language option switches the pane to Korean', { options: { language: 'ko' } }, async ($, on) => {
+  fakeHost(on, '2.52.0')
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect((await ui.find({ type: 'Button', key: 'filter' }))?.text).toBe('변경만')
+  expect(await ui.find({ type: 'Text', text: /저장소 3/ })).toBeTruthy()
+  await ui.press({ key: 'menu' })
+  expect(await ui.find({ type: 'Text', text: /깊이/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('English is the default', async ($, on) => {
+  fakeHost(on, '2.52.0')
+  await $.session.start({ cwd: '/ws', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'refresh' })
+  expect((await ui.find({ type: 'Button', key: 'filter' }))?.text).toBe('Changed')
+  expect(await ui.find({ type: 'Text', text: /[가-힣]/ })).toBeUndefined()
+  await ui.press({ key: 'menu' })
+  expect(await ui.find({ type: 'Text', text: /[가-힣]/ })).toBeUndefined()
+  await ui.unmount()
 })

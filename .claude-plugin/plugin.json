@@ -1,11 +1,32 @@
 {
   "name": "git-workspace",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A pane beside the chat that shows every git repository under a folder as a tree: branch, ahead/behind, changed files and last commit",
-  "author": { "name": "taxi-tabby", "url": "https://github.com/taxi-tabby" },
+  "author": {
+    "name": "taxi-tabby",
+    "url": "https://github.com/taxi-tabby"
+  },
   "homepage": "https://github.com/taxi-tabby/git-workspace",
   "repository": "https://github.com/taxi-tabby/git-workspace",
   "license": "MIT",
-  "keywords": ["git", "repositories", "workspace", "monorepo", "pane"],
+  "keywords": [
+    "git",
+    "repositories",
+    "workspace",
+    "monorepo",
+    "pane"
+  ],
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the pane: en (English) or ko (Korean)",
+      "default": "en",
+      "options": [
+        "en",
+        "ko"
+      ]
+    }
+  },
   "types": "./types/index.d.ts"
 }

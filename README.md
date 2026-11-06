@@ -18,27 +18,33 @@ commit with its age.
   uncommitted work or unpushed commits.
 - In a monorepo or a workspace folder with nested repositories, fold everything except the group
   you are working on.
-- Press **변경만** (changed only) before you leave for the day to list every repository that still
+- Press **Changed** before you leave for the day to list every repository that still
   needs a commit or a push.
 
 ## Usage
 
 - `/git-workspace` opens the pane. `/git-workspace <folder>` scans another folder.
 - The pane scans the session's folder by default, down to 4 levels (adjustable from 1 to 10).
-- Header buttons: **⟳** refresh (`r`), **변경만** show only repositories that need attention (`f`),
+- Header buttons: **⟳** refresh (`r`), **Changed** show only repositories that need attention (`f`),
   **⋯** menu (`p`).
-- The menu holds the scan-root field, **세션 폴더** (session folder), **상위 폴더** (parent folder),
+- The menu holds the scan-root field, **Session folder**, **Parent folder**,
   recent roots, fold or unfold all, depth − / +, and a legend.
-- Hover a row to show **⤴ 루트로** (scan from here) and **⧉ 복사** (copy path). In the terminal
+- Hover a row to show **⤴ Scan here** and **⧉ Copy path**. In the terminal
   these appear inline while the menu is open.
 - The pane rescans every 60 seconds and shortly after Claude runs a Bash command.
+
+## Language
+
+The pane is in English by default. To use Korean (한국어), set the plugin's **Language** option
+to `ko`. The install screen asks for it, and it also appears as a row in `/config`. The pane
+reloads in the new language.
 
 ## Requirements
 
 - `git` 2.26 or newer on `PATH`.
 - If git is missing, the pane says so in a banner. It still shows where the repositories are,
-  links to [git-scm.com/downloads](https://git-scm.com/downloads), and has a **다시 확인**
-  (check again) button.
+  links to [git-scm.com/downloads](https://git-scm.com/downloads), and has a **Check again**
+  button.
 - If git is older than 2.26, the banner names the installed version. Branches are still shown,
   but changed files are not.
 
@@ -81,7 +87,7 @@ without `git status`. Control characters are stripped from everything shown.
 ### Sends: nothing over the network
 
 - It makes no network requests and sends no data anywhere.
-- Pressing **⧉ 복사** (copy) puts that repository's folder path on your clipboard through Claude
+- Pressing **⧉ Copy path** puts that repository's folder path on your clipboard through Claude
   Code's clipboard call (`$.ui.copy`). That happens only when you press it.
 - It stores only your list of recently used scan roots, in Claude Code's local plugin store
   (`$.store`). The scan results stay in the session's own state.

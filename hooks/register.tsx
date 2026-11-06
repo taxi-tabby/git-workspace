@@ -20,9 +20,12 @@ import {
   visibleRows,
 } from './tree'
 import type { RawNode } from './tree'
+import { STRINGS, toLang } from './i18n'
+import type { Strings } from './i18n'
 
 const PANE = 'git-workspace'
-const TITLE = 'Git 워크스페이스'
+// the strings of the language chosen in the plugin's settings (English by default)
+let T: Strings = STRINGS.en
 const STORE_RECENT = 'recentRoots'
 const REFRESH_MS = 60_000
 const GIT_CONCURRENCY = 6
@@ -136,12 +139,12 @@ async function inspectRepo($: Engine, path: string): Promise<RepoInfo> {
       repo.branch = head.exitCode === 0 ? head.stdout.trim() : '(detached)'
       repo.isDetached = head.exitCode !== 0
       repo.warning = isUnchecked
-        ? '저장소 설정을 확인하지 못해 변경 상태 조회를 건너뜀'
-        : `저장소 설정의 filter 드라이버(${risky.join(', ')}) 때문에 변경 상태 조회를 건너뜀`
+        ? T.skippedUnchecked
+        : T.skippedFilters(risky.join(', '))
     } else {
       const status = await gitStatus($, path)
       if (status.exitCode !== 0) {
-        return sanitize({ ...repo, error: status.stderr.trim().split(/\r?\n/)[0] || 'git status 실패' })
+        return sanitize({ ...repo, error: status.stderr.trim().split(/\r?\n/)[0] || T.statusFailed })
       }
       repo = parseStatus(status.stdout, repo)
     }
@@ -153,7 +156,7 @@ async function inspectRepo($: Engine, path: string): Promise<RepoInfo> {
       repo.lastCommit = s.length > 90 ? `${s.slice(0, 89)}…` : s
       repo.lastCommitAge = age ?? ''
     } else {
-      repo.lastCommit = '(커밋 없음)'
+      repo.lastCommit = T.noCommits
     }
   } catch (err) {
     repo.error = err instanceof Error ? err.message : String(err)
@@ -272,7 +275,7 @@ async function scanOnce($: Engine) {
   const depth = await read($, maxDepth)
   await update($, scan, s => ({ ...s, root, sessionDir: session, isScanning: true, error: '' }))
   try {
-    if (!(await $.fs.exists(root))) throw new Error(`폴더가 없습니다: ${root}`)
+    if (!(await $.fs.exists(root))) throw new Error(T.folderMissing(root))
     const git = await checkGit($)
     const { tree, visited, isTruncated } = await walkTree($, root, depth)
     const paths = repoPaths(tree)
@@ -375,15 +378,17 @@ function samePath(a: string, b: string) {
   return norm(a) === norm(b)
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  T = STRINGS[toLang(options.language)]
+
   let debounce: { cancel: () => void } | undefined
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'git-workspace',
-      description: 'Git 워크스페이스 패널 열기 (인자로 폴더 경로를 주면 스캔 루트 변경)',
+      description: T.commandDescription,
     })
-    void $.ui.open({ id: PANE, title: TITLE })
+    void $.ui.open({ id: PANE, title: T.title })
     void rescan($)
     $.clock.every(REFRESH_MS, () => rescan($))
     return next(e)
@@ -392,9 +397,9 @@ export const register: Register = on => {
   on('command.run', { command: 'git-workspace' }, async ($, e) => {
     if (e.args.trim()) await setRoot($, e.args)
     else void rescan($)
-    await $.ui.open({ id: PANE, title: TITLE })
+    await $.ui.open({ id: PANE, title: T.title })
     const { root } = await currentRoot($)
-    return { text: `Git 워크스페이스 패널을 열었습니다. 스캔 루트: ${root}` }
+    return { text: T.commandOpened(root) }
   })
 
   // a Bash call may have switched branches, committed or pulled: refresh shortly after
@@ -440,7 +445,7 @@ export const register: Register = on => {
           <Text color={r.isDetached ? 'warning' : 'suggestion'}> ⎇ {r.branch}</Text>
           {r.ahead ? <Text color="success"> ↑{r.ahead}</Text> : null}
           {r.behind ? <Text color="warning"> ↓{r.behind}</Text> : null}
-          {!r.upstream && !r.isDetached ? <Text dimColor> 로컬</Text> : null}
+          {!r.upstream && !r.isDetached ? <Text dimColor> {T.local}</Text> : null}
           {r.warning ? (
             <Text color="warning"> ⚠</Text>
           ) : isDirty(r) ? (
@@ -477,11 +482,11 @@ export const register: Register = on => {
           ? { position: 'absolute' as const, top: 0, right: 0, display: 'none' as const, hover: { display: 'flex' as const } }
           : {})}
       >
-        <Button key={`root:${path}`} label="⤴ 루트로" variant="secondary" onPress={() => setRoot($, path)} />
+        <Button key={`root:${path}`} label={T.setRoot} variant="secondary" onPress={() => setRoot($, path)} />
         {isRepo ? (
           <Button
             key={`copy:${path}`}
-            label="⧉ 복사"
+            label={T.copy}
             variant="secondary"
             onPress={press => copyPath($, path, press.surface)}
           />
@@ -516,8 +521,8 @@ export const register: Register = on => {
                 {isFolded && below > 0 ? (
                   <Text dimColor>
                     {' '}
-                    · 저장소 {below}
-                    {belowChanged > 0 ? <Text color="warning"> (변경 {belowChanged})</Text> : null}
+                    · {T.reposBelow(below)}
+                    {belowChanged > 0 ? <Text color="warning"> ({T.changedBelow(belowChanged)})</Text> : null}
                   </Text>
                 ) : null}
               </Text>
@@ -536,14 +541,14 @@ export const register: Register = on => {
         <Box flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
             <Text bold wrap="truncate-end">
-              {clean(baseName(info.root)) || '(계산 중)'}
-              {isSessionRoot ? <Text dimColor> · 세션 폴더</Text> : null}
+              {clean(baseName(info.root)) || T.computing}
+              {isSessionRoot ? <Text dimColor> · {T.sessionFolder}</Text> : null}
             </Text>
             <Box flexDirection="row" gap={1} flexShrink={0}>
               <Button key="refresh" label="⟳" hotkey="r" variant="secondary" onPress={() => rescan($)} />
               <Button
                 key="filter"
-                label="변경만"
+                label={T.changedOnly}
                 hotkey="f"
                 variant={dirtyOnly ? 'primary' : 'secondary'}
                 onPress={() => update($, onlyDirty, v => !v)}
@@ -560,14 +565,14 @@ export const register: Register = on => {
           <Text dimColor wrap="truncate-middle">{clean(info.root)}</Text>
           {info.isRootRepo && info.rootRepo ? repoSummary(info.rootRepo) : null}
           <Text dimColor>
-            저장소 {repoCount}
-            {dirtyTotal ? <Text color="warning"> · 변경 {dirtyTotal}</Text> : null}
-            {syncTotal ? <Text color="warning"> · 동기화 {syncTotal}</Text> : null}
+            {T.repos(repoCount)}
+            {dirtyTotal ? <Text color="warning"> · {T.changed(dirtyTotal)}</Text> : null}
+            {syncTotal ? <Text color="warning"> · {T.unsynced(syncTotal)}</Text> : null}
             {' · '}
-            {info.isScanning ? '스캔 중…' : clockText(info.scannedAt)}
+            {info.isScanning ? T.scanning : clockText(info.scannedAt)}
           </Text>
           {info.isTruncated ? (
-            <Text color="warning">폴더가 많아 {info.visited}개까지만 살펴봤습니다. 깊이를 줄이거나 하위 폴더를 루트로 지정하세요.</Text>
+            <Text color="warning">{T.truncated(info.visited)}</Text>
           ) : null}
           {info.error ? <Text color="error">{info.error}</Text> : null}
         </Box>
@@ -577,17 +582,17 @@ export const register: Register = on => {
           <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
             <Text color="warning" bold>
               {info.gitProblem === 'missing'
-                ? '⚠ git을 찾을 수 없습니다'
-                : `⚠ git ${info.gitVersion}은 너무 오래된 버전입니다 (${MIN_GIT.join('.')} 이상 필요)`}
+                ? T.gitMissingTitle
+                : T.gitOldTitle(info.gitVersion, MIN_GIT.join('.'))}
             </Text>
             <Text>
               {info.gitProblem === 'missing'
-                ? '저장소 위치만 표시합니다. Git을 설치하고 PATH에 추가한 뒤 ⟳ 로 다시 확인하세요.'
-                : '브랜치만 표시하고 변경 상태는 건너뜁니다. Git을 업데이트한 뒤 ⟳ 로 다시 확인하세요.'}
+                ? T.gitMissingBody
+                : T.gitOldBody}
             </Text>
             <Box flexDirection="row" gap={1} alignItems="center">
-              <Link href="https://git-scm.com/downloads" label="git 내려받기 (git-scm.com)" />
-              <Button key="git-recheck" label="다시 확인" variant="secondary" onPress={() => rescan($)} />
+              <Link href="https://git-scm.com/downloads" label={T.gitDownload} />
+              <Button key="git-recheck" label={T.checkAgain} variant="secondary" onPress={() => rescan($)} />
             </Box>
           </Box>
         ) : null}
@@ -596,23 +601,23 @@ export const register: Register = on => {
         {isMenuOpen ? (
           <Box flexDirection="column" gap={1} borderStyle="round" borderDimColor paddingX={1}>
             <Box flexDirection="column">
-              <Text dimColor>스캔 루트</Text>
+              <Text dimColor>{T.scanRoot}</Text>
               {Input ? (
                 <Input
                   key="root-input"
-                  placeholder="폴더 경로 (예: D:\projects)"
+                  placeholder={T.rootPlaceholder}
                   value={info.root}
-                  submitLabel="적용"
+                  submitLabel={T.apply}
                   onSubmit={value => setRoot($, value)}
                 />
               ) : (
-                <Text dimColor>/git-workspace &lt;폴더 경로&gt;</Text>
+                <Text dimColor>{T.rootCommandHint}</Text>
               )}
               <Box flexDirection="row" gap={1} flexWrap="wrap">
-                <Button key="session-root" label="세션 폴더" variant="secondary" onPress={() => setRoot($, '')} />
+                <Button key="session-root" label={T.sessionFolderButton} variant="secondary" onPress={() => setRoot($, '')} />
                 <Button
                   key="parent-root"
-                  label="상위 폴더"
+                  label={T.parentFolderButton}
                   variant="secondary"
                   onPress={() => setRoot($, parentOf(info.root || info.sessionDir))}
                 />
@@ -621,7 +626,7 @@ export const register: Register = on => {
 
             {recent.length > 0 ? (
               <Box flexDirection="column">
-                <Text dimColor>최근</Text>
+                <Text dimColor>{T.recent}</Text>
                 {recent.map(path => (
                   <Button key={`recent:${path}`} plain dimColor onPress={() => setRoot($, path)}>
                     {clean(baseName(path))} <Text dimColor>{clean(parentOf(path))}</Text>
@@ -633,11 +638,11 @@ export const register: Register = on => {
             <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
               <Button
                 key="fold-all"
-                label={folded.size > 0 ? '모두 펼치기' : '모두 접기'}
+                label={folded.size > 0 ? T.expandAll : T.collapseAll}
                 variant="secondary"
                 onPress={() => update($, collapsed, list => (list.length > 0 ? [] : foldable))}
               />
-              <Text dimColor>깊이</Text>
+              <Text dimColor>{T.depth}</Text>
               <Button
                 key="depth-down"
                 label="−"
@@ -654,10 +659,10 @@ export const register: Register = on => {
             </Box>
 
             <Box flexDirection="column">
-              <Text dimColor>◆ 저장소 ▪ 폴더 · ↑ 보낼 커밋 ↓ 받을 커밋 · 로컬 = upstream 없음</Text>
-              <Text dimColor>+ 스테이지 ~ 수정 ? 새 파일 ! 충돌 · ✓ 깨끗함 · ⚠ 상태 조회 건너뜀</Text>
-              {hasHover ? <Text dimColor>행에 마우스를 올리면 ⤴ 루트로 · ⧉ 복사</Text> : null}
-              <Text dimColor>{info.gitVersion ? `git ${info.gitVersion}` : 'git 없음'}</Text>
+              <Text dimColor>{T.legendKinds}</Text>
+              <Text dimColor>{T.legendChanges}</Text>
+              {hasHover ? <Text dimColor>{T.legendHover}</Text> : null}
+              <Text dimColor>{T.gitVersion(info.gitVersion)}</Text>
             </Box>
           </Box>
         ) : null}
@@ -668,9 +673,9 @@ export const register: Register = on => {
             <Text dimColor>
               {rows.length === 0
                 ? info.isRootRepo
-                  ? '하위 저장소가 없습니다.'
-                  : `깊이 ${depth} 안에 git 저장소가 없습니다.`
-                : '변경된 저장소가 없습니다.'}
+                  ? T.noChildRepos
+                  : T.noRepos(depth)
+                : T.noChangedRepos}
             </Text>
           ) : null}
           {shown.map(row)}
