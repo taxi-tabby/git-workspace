@@ -1,0 +1,13 @@
+{
+  "name": "git-workspace",
+  "owner": {
+    "name": "taxi-tabby"
+  },
+  "plugins": [
+    {
+      "name": "git-workspace",
+      "source": "./"
+    }
+  ],
+  "description": "Git workspace pane for Claude Code"
+}

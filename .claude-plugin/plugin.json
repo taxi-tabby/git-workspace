@@ -1,0 +1,7 @@
+{
+  "name": "git-workspace",
+  "version": "0.1.0",
+  "author": { "name": "taxi-tabby" },
+  "description": "Pane listing every git repository under a folder with branch, ahead/behind, changes and last commit",
+  "types": "./types/index.d.ts"
+}
