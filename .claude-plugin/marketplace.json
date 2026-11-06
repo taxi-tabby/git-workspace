@@ -1,13 +1,6 @@
 {
   "name": "git-workspace",
-  "owner": {
-    "name": "taxi-tabby"
-  },
-  "plugins": [
-    {
-      "name": "git-workspace",
-      "source": "./"
-    }
-  ],
-  "description": "Git workspace pane for Claude Code"
+  "description": "Git workspace pane for Claude Code",
+  "owner": { "name": "taxi-tabby", "url": "https://github.com/taxi-tabby" },
+  "plugins": [{ "name": "git-workspace", "source": "./" }]
 }

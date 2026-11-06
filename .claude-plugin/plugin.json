@@ -1,7 +1,11 @@
 {
   "name": "git-workspace",
-  "version": "0.1.0",
-  "author": { "name": "taxi-tabby" },
-  "description": "Pane listing every git repository under a folder with branch, ahead/behind, changes and last commit",
+  "version": "0.2.0",
+  "description": "A pane beside the chat that shows every git repository under a folder as a tree: branch, ahead/behind, changed files and last commit",
+  "author": { "name": "taxi-tabby", "url": "https://github.com/taxi-tabby" },
+  "homepage": "https://github.com/taxi-tabby/git-workspace",
+  "repository": "https://github.com/taxi-tabby/git-workspace",
+  "license": "MIT",
+  "keywords": ["git", "repositories", "workspace", "monorepo", "pane"],
   "types": "./types/index.d.ts"
 }
