@@ -105,7 +105,21 @@ export const untrustedFilters = (stdout: string): string[] => {
   return [...names]
 }
 
-export const isDirty = (r: RepoInfo): boolean => r.staged + r.unstaged + r.untracked + r.conflicts > 0
+/** `config --show-scope` (git 2.26) is the newest option the mod uses. */
+export const MIN_GIT: readonly [number, number] = [2, 26]
+
+/** Reads `git --version` ("git version 2.52.0.windows.1") into "2.52.0" and whether it is too old. */
+export const parseGitVersion = (stdout: string): { version: string; isTooOld: boolean } | null => {
+  const m = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(stdout)
+  if (!m) return null
+  const major = Number(m[1])
+  const minor = Number(m[2])
+  const version = clean(`${m[1]}.${m[2]}${m[3] ? `.${m[3]}` : ''}`)
+  const isTooOld = major < MIN_GIT[0] || (major === MIN_GIT[0] && minor < MIN_GIT[1])
+  return { version, isTooOld }
+}
+
+export const isDirty =(r: RepoInfo): boolean => r.staged + r.unstaged + r.untracked + r.conflicts > 0
 export const needsAttention = (r: RepoInfo): boolean =>
   isDirty(r) || r.ahead > 0 || r.behind > 0 || r.error !== '' || r.warning !== ''
 

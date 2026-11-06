@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { emptyRepo, flatten, gitKindOfFile, parentOf, parseStatus, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
+import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
 import type { RawNode } from '../hooks/tree'
 
 const repo = (path: string, children: RawNode[] = []): RawNode => ({
@@ -61,4 +61,8 @@ test('parsers', async () => {
   expect(parentOf('D:\\projects\\x')).toBe('D:\\projects')
   expect(parentOf('D:\\projects')).toBe('D:/')
   expect(parentOf('D:/')).toBe('D:/')
+  expect(parseGitVersion('git version 2.52.0.windows.1\n')).toEqual({ version: '2.52.0', isTooOld: false })
+  expect(parseGitVersion('git version 2.26.0')).toEqual({ version: '2.26.0', isTooOld: false })
+  expect(parseGitVersion('git version 2.25.4')).toEqual({ version: '2.25.4', isTooOld: true })
+  expect(parseGitVersion('bash: git: command not found')).toBeNull()
 })

@@ -33,6 +33,15 @@ commit with its age.
   these appear inline while the menu is open.
 - The pane rescans every 60 seconds and shortly after Claude runs a Bash command.
 
+## Requirements
+
+- `git` 2.26 or newer on `PATH`.
+- If git is missing, the pane says so in a banner. It still shows where the repositories are,
+  links to [git-scm.com/downloads](https://git-scm.com/downloads), and has a **다시 확인**
+  (check again) button.
+- If git is older than 2.26, the banner names the installed version. Branches are still shown,
+  but changed files are not.
+
 ## What it reads, runs and sends
 
 ### Reads
@@ -55,6 +64,7 @@ safety options shown under it.
 
 | Purpose | Command |
 | --- | --- |
+| Check that git is installed, and its version (once per scan) | `git --version` |
 | Find filter drivers the repository sets for itself | `git -C <repo> config --show-scope --name-only --get-regexp ^filter\.` |
 | Branch, upstream, ahead/behind, changed files | `git -C <repo> status --porcelain=v2 --branch --untracked-files=normal --ignore-submodules=all` |
 | Branch only, when status is skipped | `git -C <repo> symbolic-ref --quiet --short HEAD` |

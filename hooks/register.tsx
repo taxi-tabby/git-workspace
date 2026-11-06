@@ -11,7 +11,9 @@ import {
   isDirty,
   needsAttention,
   joinPath,
+  MIN_GIT,
   parentOf,
+  parseGitVersion,
   parseStatus,
   subtreeCounts,
   untrustedFilters,
@@ -37,9 +39,9 @@ const scan = atom(
   { plugin: 'git-workspace', key: 'scan' } as const,
   {
     root: '', isRootRepo: false, rootRepo: null, sessionDir: '', isScanning: false,
-    scannedAt: 0, visited: 0, isTruncated: false, error: '',
+    scannedAt: 0, visited: 0, isTruncated: false, error: '', gitVersion: '', gitProblem: '',
   },
-  { shape: 'scan-2' },
+  { shape: 'scan-3' },
 )
 const onlyDirty = atom({ plugin: 'git-workspace', key: 'onlyDirty' } as const, false)
 const collapsed = atom({ plugin: 'git-workspace', key: 'collapsed' } as const, [], { shape: 'collapsed-1' })
@@ -57,6 +59,23 @@ type Engine = EngineInterface
 // hooks, pager, external diff, signature programs) and never prompts.
 
 const GIT_OPTIONS = { timeoutMs: 15_000, env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' } }
+
+/** Whether git can start at all, and its version. */
+async function gitVersionCommand($: Engine) {
+  return $.process.run(['git', '--version'], { timeoutMs: 10_000, env: { GIT_TERMINAL_PROMPT: '0' } })
+}
+
+async function checkGit($: Engine): Promise<{ version: string; problem: ScanInfo['gitProblem'] }> {
+  try {
+    const result = await gitVersionCommand($)
+    const parsed = result.exitCode === 0 ? parseGitVersion(result.stdout) : null
+    if (!parsed) return { version: '', problem: 'missing' }
+    return { version: parsed.version, problem: parsed.isTooOld ? 'old' : '' }
+  } catch {
+    // the process could not start: git is not installed or not on PATH
+    return { version: '', problem: 'missing' }
+  }
+}
 
 /** Lists filter drivers from every config scope (reading config runs nothing). */
 async function gitFilterConfig($: Engine, cwd: string) {
@@ -254,14 +273,18 @@ async function scanOnce($: Engine) {
   await update($, scan, s => ({ ...s, root, sessionDir: session, isScanning: true, error: '' }))
   try {
     if (!(await $.fs.exists(root))) throw new Error(`폴더가 없습니다: ${root}`)
+    const git = await checkGit($)
     const { tree, visited, isTruncated } = await walkTree($, root, depth)
     const paths = repoPaths(tree)
-    const infos = await inspectAll($, paths)
-    const byPath = new Map(paths.map((path, i) => [path, infos[i]!]))
+    // without git the tree still shows where the repositories are, with no status
+    const infos = git.problem === 'missing' ? [] : await inspectAll($, paths)
+    const byPath = new Map(infos.map((info, i) => [paths[i]!, info]))
     const rows = flatten(tree, byPath)
     await update($, nodes, () => rows)
     await update($, scan, s => ({
       ...s,
+      gitVersion: git.version,
+      gitProblem: git.problem,
       isRootRepo: tree.isRepo,
       rootRepo: tree.isRepo ? (byPath.get(tree.path) ?? null) : null,
       isScanning: false,
@@ -384,7 +407,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
-    const { Box, Text, Button } = els
+    const { Box, Text, Button, Link } = els
     const Input = 'Input' in els ? els.Input : undefined
     // desktop has a pointer: row actions float in on hover. Elsewhere they are
     // drawn inline while the ⋯ menu is open, so the keyboard can reach them.
@@ -401,6 +424,7 @@ export const register: Register = on => {
     const counts = subtreeCounts(rows)
     const shown = visibleRows(rows, folded, dirtyOnly)
     const allRepos = [...rows.map(row => row.repo), info.rootRepo].filter((r): r is RepoInfo => r !== null)
+    const repoCount = rows.filter(row => row.kind === 'repo').length + (info.isRootRepo ? 1 : 0)
     const dirtyTotal = allRepos.filter(isDirty).length
     const syncTotal = allRepos.filter(r => r.ahead > 0 || r.behind > 0).length
     const isSessionRoot = info.root !== '' && samePath(info.root, info.sessionDir)
@@ -536,7 +560,7 @@ export const register: Register = on => {
           <Text dimColor wrap="truncate-middle">{clean(info.root)}</Text>
           {info.isRootRepo && info.rootRepo ? repoSummary(info.rootRepo) : null}
           <Text dimColor>
-            저장소 {allRepos.length}
+            저장소 {repoCount}
             {dirtyTotal ? <Text color="warning"> · 변경 {dirtyTotal}</Text> : null}
             {syncTotal ? <Text color="warning"> · 동기화 {syncTotal}</Text> : null}
             {' · '}
@@ -547,6 +571,26 @@ export const register: Register = on => {
           ) : null}
           {info.error ? <Text color="error">{info.error}</Text> : null}
         </Box>
+
+        {/* git missing or too old: say so plainly, with where to get it */}
+        {info.gitProblem ? (
+          <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+            <Text color="warning" bold>
+              {info.gitProblem === 'missing'
+                ? '⚠ git을 찾을 수 없습니다'
+                : `⚠ git ${info.gitVersion}은 너무 오래된 버전입니다 (${MIN_GIT.join('.')} 이상 필요)`}
+            </Text>
+            <Text>
+              {info.gitProblem === 'missing'
+                ? '저장소 위치만 표시합니다. Git을 설치하고 PATH에 추가한 뒤 ⟳ 로 다시 확인하세요.'
+                : '브랜치만 표시하고 변경 상태는 건너뜁니다. Git을 업데이트한 뒤 ⟳ 로 다시 확인하세요.'}
+            </Text>
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Link href="https://git-scm.com/downloads" label="git 내려받기 (git-scm.com)" />
+              <Button key="git-recheck" label="다시 확인" variant="secondary" onPress={() => rescan($)} />
+            </Box>
+          </Box>
+        ) : null}
 
         {/* settings, folded away behind ⋯ */}
         {isMenuOpen ? (
@@ -613,6 +657,7 @@ export const register: Register = on => {
               <Text dimColor>◆ 저장소 ▪ 폴더 · ↑ 보낼 커밋 ↓ 받을 커밋 · 로컬 = upstream 없음</Text>
               <Text dimColor>+ 스테이지 ~ 수정 ? 새 파일 ! 충돌 · ✓ 깨끗함 · ⚠ 상태 조회 건너뜀</Text>
               {hasHover ? <Text dimColor>행에 마우스를 올리면 ⤴ 루트로 · ⧉ 복사</Text> : null}
+              <Text dimColor>{info.gitVersion ? `git ${info.gitVersion}` : 'git 없음'}</Text>
             </Box>
           </Box>
         ) : null}

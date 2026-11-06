@@ -39,6 +39,10 @@ export type ScanInfo = {
   visited: number
   isTruncated: boolean
   error: string
+  /** `git --version`'s number ("2.52.0"), or '' when git did not run */
+  gitVersion: string
+  /** '' when git is usable; 'missing' when it cannot start; 'old' when older than the mod needs */
+  gitProblem: '' | 'missing' | 'old'
 }
 
 declare module 'claude-code' {

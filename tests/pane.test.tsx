@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 const PANE = {
   plugin: 'git-workspace',
@@ -28,7 +29,13 @@ const norm = (p: string) => p.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
 
 const STATUS = ['# branch.oid abc', '# branch.head main', '# branch.upstream origin/main', '# branch.ab +1 -0', '1 .M N... 1 1 1 a b f'].join('\n')
 
-test('the tree and the menu draw on desktop and terminal', async ($, on) => {
+type On = Parameters<TestBody>[1]
+
+/**
+ * Stands for the engine: a fake disk and a fake `git`. `gitVersion` is what
+ * `git --version` prints, or null when git cannot start at all.
+ */
+const fakeHost = (on: On, gitVersion: string | null) => {
   on('command.register', () => ({ value: { command: 'git-workspace' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('clock.every', () => ({ value: undefined }))
@@ -41,11 +48,45 @@ test('the tree and the menu draw on desktop and terminal', async ($, on) => {
   }))
   on('process.run', (_, e) => {
     const args = e.argv.join(' ')
+    if (args === 'git --version') {
+      if (gitVersion === null) throw new Error('spawn git ENOENT')
+      return { value: { exitCode: 0, stdout: `git version ${gitVersion}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (gitVersion === null) throw new Error('spawn git ENOENT')
     const stdout = args.includes(' status ') ? STATUS : args.includes(' log ') ? 'abc1234 init\x1f2 days ago' : ''
     return {
       value: { exitCode: args.includes(' config ') ? 1 : 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     }
   })
+}
+
+test('without git the pane says so, links the download, and still shows where repositories are', async ($, on) => {
+  fakeHost(on, null)
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ type: 'Text', text: /git을 찾을 수 없습니다/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'git-recheck' })).toBeTruthy()
+    expect(await ui.find({ type: 'Link' })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /저장소 3/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /group/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /⎇/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('an old git is named with the version it needs', async ($, on) => {
+  fakeHost(on, '2.20.1')
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /2\.20\.1.*2\.26 이상 필요/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('the tree and the menu draw on desktop and terminal', async ($, on) => {
+  fakeHost(on, '2.52.0.windows.1')
 
   await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
 

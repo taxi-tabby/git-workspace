@@ -1,6 +1,6 @@
 {
   "name": "git-workspace",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A pane beside the chat that shows every git repository under a folder as a tree: branch, ahead/behind, changed files and last commit",
   "author": { "name": "taxi-tabby", "url": "https://github.com/taxi-tabby" },
   "homepage": "https://github.com/taxi-tabby/git-workspace",
