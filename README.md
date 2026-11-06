@@ -44,9 +44,12 @@ commit with its age.
 
 ### Runs: `git` only
 
-The mod runs one program: the local `git` executable. It needs `git` to read each repository's
-branch, upstream, ahead/behind counts, changed files and last commit. It never writes to a
-repository, never fetches, and never contacts a remote. These are the four commands, written as
+The mod runs one program: the local `git` executable, started directly by name with a fixed
+argument list. No shell or inline script is involved. It needs `git` to read each repository's
+branch, upstream, ahead/behind counts, changed files and last commit. Although git can reach the
+network, this mod never uses it that way. It never runs `fetch`, `pull`, `push`, `clone`,
+`ls-remote` or any other command that contacts a remote. The ahead/behind counts come from the
+remote-tracking branches already on disk. It never writes to a repository. These are the four commands, written as
 fixed text in `hooks/register.tsx`. `<repo>` is the repository's folder, and every call has the
 safety options shown under it.
 
@@ -81,7 +84,10 @@ without `git status`. Control characters are stripped from everything shown.
   scan root. It answers with one line naming the scan root, and handles no other command.
 - `tool.call` for `Bash` only: lets the call run unchanged, returns its result unchanged, and
   schedules a rescan 1.5 seconds later. A Bash command may have switched branches, committed or
-  pulled. It never blocks, rewrites or delays a call.
+  pulled. It never blocks, rewrites or delays a call. It does not read the command, its output
+  or anything else from the conversation. It uses the event only as a signal to refresh.
+- Nothing from the conversation reaches `git` or the pane. The only inputs are folder paths: the
+  session's folder, a folder you type or pick, and what the scan finds on disk.
 - `ui.render` for its own pane: draws the tree.
 
 It changes no settings or permissions, and adds no tools, agents or subagents.
