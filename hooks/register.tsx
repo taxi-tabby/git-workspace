@@ -38,8 +38,36 @@ const baseName = (path: string): string => {
   return cut < 0 ? trimmed : trimmed.slice(cut + 1)
 }
 
+// Scanned repositories are untrusted: switch off every config setting that
+// makes `git status` / `git log` start a program (fsmonitor, hooks, pager,
+// external diff), and never prompt for credentials.
+const SAFE_GIT = [
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.hooksPath=',
+  '-c', 'core.pager=cat',
+  '-c', 'diff.external=',
+  '--no-pager',
+  '--no-optional-locks',
+]
+
 const git = async ($: $, cwd: string, args: string[]) =>
-  $.process.run(['git', '-C', cwd, ...args], { timeoutMs: 15_000 })
+  $.process.run(['git', ...SAFE_GIT, '-C', cwd, ...args], {
+    timeoutMs: 15_000,
+    env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
+  })
+
+// Strip C0/C1 control characters (terminal escape sequences) from repo-derived text.
+const clean = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+
+const sanitize = (repo: RepoInfo): RepoInfo => ({
+  ...repo,
+  name: clean(repo.name),
+  branch: clean(repo.branch),
+  upstream: clean(repo.upstream),
+  lastCommit: clean(repo.lastCommit),
+  lastCommitAge: clean(repo.lastCommitAge),
+  error: clean(repo.error),
+})
 
 const emptyRepo = (path: string): RepoInfo => ({
   name: baseName(path),
@@ -99,12 +127,12 @@ const inspectRepo = async ($: $, path: string): Promise<RepoInfo> => {
       git($, path, ['log', '-1', '--format=%h %s%x1f%cr']),
     ])
     if (status.exitCode !== 0) {
-      return { ...repo, error: status.stderr.trim().split(/\r?\n/)[0] || 'git status 실패' }
+      return sanitize({ ...repo, error: status.stderr.trim().split(/\r?\n/)[0] || 'git status 실패' })
     }
     repo = parseStatus(status.stdout, repo)
     if (log.exitCode === 0) {
       const [subject, age] = log.stdout.trim().split('\x1f')
-      const s = subject ?? ''
+      const s = clean(subject ?? '')
       repo.lastCommit = s.length > 90 ? `${s.slice(0, 89)}…` : s
       repo.lastCommitAge = age ?? ''
     } else {
@@ -113,7 +141,7 @@ const inspectRepo = async ($: $, path: string): Promise<RepoInfo> => {
   } catch (err) {
     repo.error = err instanceof Error ? err.message : String(err)
   }
-  return repo
+  return sanitize(repo)
 }
 
 const findRepos = async ($: $, root: string): Promise<string[]> => {
