@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, UiPressArgument } from 'claude-code'
 
 import type { RepoInfo, ScanInfo, TreeNode } from '../types'
 import {
@@ -47,74 +47,87 @@ const rootChoice = atom({ plugin: 'git-workspace', key: 'root' } as const, '')
 const maxDepth = atom({ plugin: 'git-workspace', key: 'maxDepth' } as const, DEFAULT_DEPTH)
 const isEditingRoot = atom({ plugin: 'git-workspace', key: 'isEditingRoot' } as const, false)
 
-type $ = EngineInterface
+type Engine = EngineInterface
 
 // ---------------------------------------------------------------- git
+//
+// The only program this mod runs is the local `git`, read-only, with these four
+// fixed commands. Scanned repositories are untrusted, so every call switches off
+// each config setting that could make git start another program (fsmonitor,
+// hooks, pager, external diff, signature programs) and never prompts.
 
-// Scanned repositories are untrusted: switch off every config setting that
-// makes `git status` / `git log` start a program (fsmonitor, hooks, pager,
-// external diff), skip submodules (their own config is not checked), and never
-// prompt for credentials. Filter drivers are checked per repository below.
-const SAFE_GIT = [
-  '-c', 'core.fsmonitor=false',
-  '-c', 'core.hooksPath=',
-  '-c', 'core.pager=cat',
-  '-c', 'diff.external=',
-  // `log.showSignature` would run gpg.program / gpg.ssh.program from repo config
-  '-c', 'log.showSignature=false',
-  '-c', 'gpg.program=false',
-  '-c', 'gpg.ssh.program=false',
-  '-c', 'gpg.x509.program=false',
-  '--no-pager',
-  '--no-optional-locks',
-]
+const GIT_OPTIONS = { timeoutMs: 15_000, env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' } }
 
-const git = async ($: $, cwd: string, args: string[]) =>
-  $.process.run(['git', ...SAFE_GIT, '-C', cwd, ...args], {
-    timeoutMs: 15_000,
-    env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
-  })
+/** Lists filter drivers from every config scope (reading config runs nothing). */
+async function gitFilterConfig($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'log.showSignature=false', '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '--no-pager', '--no-optional-locks', '-C', cwd, 'config', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'],
+    GIT_OPTIONS,
+  )
+}
 
-const sanitize = (repo: RepoInfo): RepoInfo => ({
-  ...repo,
-  branch: clean(repo.branch),
-  upstream: clean(repo.upstream),
-  lastCommit: clean(repo.lastCommit),
-  lastCommitAge: clean(repo.lastCommitAge),
-  warning: clean(repo.warning),
-  error: clean(repo.error),
-})
+/** Branch, upstream, ahead/behind and changed files. */
+async function gitStatus($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'log.showSignature=false', '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '--no-pager', '--no-optional-locks', '-C', cwd, 'status', '--porcelain=v2', '--branch', '--untracked-files=normal', '--ignore-submodules=all'],
+    GIT_OPTIONS,
+  )
+}
 
-const inspectRepo = async ($: $, path: string): Promise<RepoInfo> => {
+/** The current branch name, for a repository whose status is not read. */
+async function gitHead($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'log.showSignature=false', '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '--no-pager', '--no-optional-locks', '-C', cwd, 'symbolic-ref', '--quiet', '--short', 'HEAD'],
+    GIT_OPTIONS,
+  )
+}
+
+/** Short hash, subject and age of the last commit. */
+async function gitLastCommit($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'log.showSignature=false', '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '--no-pager', '--no-optional-locks', '-C', cwd, 'log', '-1', '--no-show-signature', '--format=%h %s%x1f%cr'],
+    GIT_OPTIONS,
+  )
+}
+
+function sanitize(repo: RepoInfo): RepoInfo {
+  return {
+    ...repo,
+    branch: clean(repo.branch),
+    upstream: clean(repo.upstream),
+    lastCommit: clean(repo.lastCommit),
+    lastCommitAge: clean(repo.lastCommitAge),
+    warning: clean(repo.warning),
+    error: clean(repo.error),
+  }
+}
+
+async function inspectRepo($: Engine, path: string): Promise<RepoInfo> {
   let repo = emptyRepo()
   try {
-    // Reading config runs nothing. A filter driver set by the repository itself
-    // could run a program during `git status`, so such a repository gets its
-    // branch read without status.
-    const filters = await git($, path, ['config', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'])
+    // A filter driver set by the repository itself could run a program during
+    // `git status`, so such a repository gets its branch read without status.
+    const filters = await gitFilterConfig($, path)
     // exit 1 with no output is git's "no such key"; any other failure fails closed
     const isUnchecked = filters.exitCode !== 0 && !(filters.exitCode === 1 && filters.stdout.trim() === '')
     const risky = filters.exitCode === 0 ? untrustedFilters(filters.stdout) : []
 
-    const log = git($, path, ['log', '-1', '--no-show-signature', '--format=%h %s%x1f%cr'])
     if (isUnchecked || risky.length > 0) {
-      const head = await git($, path, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
+      const head = await gitHead($, path)
       repo.branch = head.exitCode === 0 ? head.stdout.trim() : '(detached)'
       repo.isDetached = head.exitCode !== 0
       repo.warning = isUnchecked
         ? '저장소 설정을 확인하지 못해 변경 상태 조회를 건너뜀'
         : `저장소 설정의 filter 드라이버(${risky.join(', ')}) 때문에 변경 상태 조회를 건너뜀`
     } else {
-      const status = await git($, path, [
-        'status', '--porcelain=v2', '--branch', '--untracked-files=normal', '--ignore-submodules=all',
-      ])
+      const status = await gitStatus($, path)
       if (status.exitCode !== 0) {
         return sanitize({ ...repo, error: status.stderr.trim().split(/\r?\n/)[0] || 'git status 실패' })
       }
       repo = parseStatus(status.stdout, repo)
     }
 
-    const last = await log
+    const last = await gitLastCommit($, path)
     if (last.exitCode === 0) {
       const [subject, age] = last.stdout.trim().split('\x1f')
       const s = clean(subject ?? '')
@@ -129,144 +142,178 @@ const inspectRepo = async ($: $, path: string): Promise<RepoInfo> => {
   return sanitize(repo)
 }
 
-// ---------------------------------------------------------------- scan
-
-const limiter = (limit: number) => {
-  let active = 0
-  const waiting: (() => void)[] = []
-  return async <T,>(fn: () => Promise<T>): Promise<T> => {
-    if (active >= limit) await new Promise<void>(resolve => waiting.push(resolve))
-    active++
-    try {
-      return await fn()
-    } finally {
-      active--
-      waiting.shift()?.()
-    }
+/** Inspects `paths` from a shared cursor; several of these run side by side. */
+async function inspectWorker($: Engine, paths: string[], out: RepoInfo[], cursor: { next: number }) {
+  while (cursor.next < paths.length) {
+    const index = cursor.next++
+    out[index] = await inspectRepo($, paths[index]!)
   }
 }
 
-const mapLimited = async <T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> => {
-  const run = limiter(limit)
-  return Promise.all(items.map(item => run(() => fn(item))))
+async function inspectAll($: Engine, paths: string[]): Promise<RepoInfo[]> {
+  const out: RepoInfo[] = new Array(paths.length)
+  const cursor = { next: 0 }
+  const workers: Promise<void>[] = []
+  for (let i = 0; i < Math.min(GIT_CONCURRENCY, paths.length); i++) workers.push(inspectWorker($, paths, out, cursor))
+  await Promise.all(workers)
+  return out
+}
+
+// ---------------------------------------------------------------- scan
+
+type Walk = { visited: number; isTruncated: boolean; active: number; waiting: (() => void)[] }
+
+async function acquireSlot(walk: Walk) {
+  if (walk.active >= FS_CONCURRENCY) await new Promise<void>(resolve => walk.waiting.push(resolve))
+  walk.active++
+}
+
+function releaseSlot(walk: Walk) {
+  walk.active--
+  walk.waiting.shift()?.()
+}
+
+async function listDir($: Engine, walk: Walk, path: string) {
+  await acquireSlot(walk)
+  try {
+    return await $.fs.list(path)
+  } catch {
+    return []
+  } finally {
+    releaseSlot(walk)
+  }
+}
+
+async function readGitFile($: Engine, path: string): Promise<string> {
+  try {
+    const content = await $.fs.read(joinPath(path, '.git'))
+    return typeof content === 'string' ? content : ''
+  } catch {
+    return ''
+  }
 }
 
 /**
- * Walks the folder tree from `root` down to `depth` levels, through
- * repositories too (a repository can hold more repositories), and keeps only
- * the folders that lead to a repository.
+ * One folder of the walk: a repository, or a folder that leads to one. It goes
+ * on through repositories too (a repository can hold more repositories).
  */
-const walkTree = async ($: $, root: string, depth: number) => {
-  const run = limiter(FS_CONCURRENCY)
-  let visited = 0
-  let isTruncated = false
-
-  const visit = async (path: string, level: number): Promise<RawNode | null> => {
-    if (visited >= MAX_VISITED) {
-      isTruncated = true
-      return null
-    }
-    visited++
-    const entries = await run(() => $.fs.list(path)).catch(() => [])
-    const dotGit = entries.find(entry => entry.name === '.git')
-    let gitKind: RawNode['gitKind'] = 'repo'
-    if (dotGit?.kind === 'file') {
-      const content = await $.fs.read(joinPath(path, '.git')).catch(() => '')
-      gitKind = gitKindOfFile(typeof content === 'string' ? content : '')
-    }
-    const children: RawNode[] = []
-    if (level < depth) {
-      const dirs = entries
-        .filter(e => e.kind === 'dir' && !e.isLink && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name))
-        .map(e => e.name)
-        .sort((a, b) => a.localeCompare(b))
-      const found = await Promise.all(dirs.map(name => visit(joinPath(path, name), level + 1)))
-      for (const child of found) if (child) children.push(child)
-    }
-    const isRepo = dotGit !== undefined
-    if (!isRepo && children.length === 0 && level > 0) return null
-    return { path, name: clean(baseName(path) || path), isRepo, gitKind, children }
+async function visitDir($: Engine, walk: Walk, path: string, level: number, depth: number): Promise<RawNode | null> {
+  if (walk.visited >= MAX_VISITED) {
+    walk.isTruncated = true
+    return null
   }
-
-  const tree = (await visit(root, 0)) ?? { path: root, name: root, isRepo: false, gitKind: 'repo', children: [] }
-  return { tree, visited, isTruncated }
+  walk.visited++
+  const entries = await listDir($, walk, path)
+  const dotGit = entries.find(entry => entry.name === '.git')
+  const gitKind: RawNode['gitKind'] = dotGit?.kind === 'file' ? gitKindOfFile(await readGitFile($, path)) : 'repo'
+  const children: RawNode[] = []
+  if (level < depth) {
+    const dirs = entries
+      .filter(entry => entry.kind === 'dir' && !entry.isLink && !entry.name.startsWith('.') && !SKIP_DIRS.has(entry.name))
+      .map(entry => entry.name)
+      .sort((a, b) => a.localeCompare(b))
+    const pending: Promise<RawNode | null>[] = []
+    for (const name of dirs) pending.push(visitDir($, walk, joinPath(path, name), level + 1, depth))
+    for (const child of await Promise.all(pending)) if (child) children.push(child)
+  }
+  const isRepo = dotGit !== undefined
+  if (!isRepo && children.length === 0 && level > 0) return null
+  return { path, name: clean(baseName(path) || path), isRepo, gitKind, children }
 }
 
-const repoPaths = (node: RawNode, into: string[] = []): string[] => {
+async function walkTree($: Engine, root: string, depth: number) {
+  const walk: Walk = { visited: 0, isTruncated: false, active: 0, waiting: [] }
+  const tree = (await visitDir($, walk, root, 0, depth)) ?? { path: root, name: root, isRepo: false, gitKind: 'repo', children: [] }
+  return { tree, visited: walk.visited, isTruncated: walk.isTruncated }
+}
+
+function repoPaths(node: RawNode, into: string[] = []): string[] {
   if (node.isRepo) into.push(node.path)
   for (const child of node.children) repoPaths(child, into)
   return into
 }
 
-const sessionDir = async ($: $): Promise<string> => {
-  const cwd = await $.fs.stat('.', { resolve: true }).catch(() => undefined)
-  return cwd?.realPath ?? '.'
+async function sessionDir($: Engine): Promise<string> {
+  try {
+    const cwd = await $.fs.stat('.', { resolve: true })
+    return cwd.realPath ?? '.'
+  } catch {
+    return '.'
+  }
 }
 
-const currentRoot = async ($: $): Promise<{ root: string; session: string }> => {
+async function currentRoot($: Engine): Promise<{ root: string; session: string }> {
   const session = await sessionDir($)
   const chosen = (await read($, rootChoice)).trim()
   return { root: chosen || session, session }
 }
 
-let running: Promise<void> | undefined
-let again = false
-
-const rescan = ($: $): Promise<void> => {
-  if (running) {
-    again = true
-    return running
+async function scanOnce($: Engine) {
+  const { root, session } = await currentRoot($)
+  const depth = await read($, maxDepth)
+  await update($, scan, s => ({ ...s, root, sessionDir: session, isScanning: true, error: '' }))
+  try {
+    if (!(await $.fs.exists(root))) throw new Error(`폴더가 없습니다: ${root}`)
+    const { tree, visited, isTruncated } = await walkTree($, root, depth)
+    const paths = repoPaths(tree)
+    const infos = await inspectAll($, paths)
+    const byPath = new Map(paths.map((path, i) => [path, infos[i]!]))
+    const rows = flatten(tree, byPath)
+    await update($, nodes, () => rows)
+    await update($, scan, s => ({
+      ...s,
+      isRootRepo: tree.isRepo,
+      rootRepo: tree.isRepo ? (byPath.get(tree.path) ?? null) : null,
+      isScanning: false,
+      scannedAt: Date.now(),
+      visited,
+      isTruncated,
+    }))
+  } catch (err) {
+    const message = clean(err instanceof Error ? err.message : String(err))
+    await update($, nodes, () => [])
+    await update($, scan, s => ({
+      ...s, isRootRepo: false, rootRepo: null, isScanning: false, scannedAt: Date.now(), error: message,
+    }))
   }
-  running = (async () => {
-    do {
-      again = false
-      const { root, session } = await currentRoot($)
-      const depth = await read($, maxDepth)
-      await update($, scan, s => ({ ...s, root, sessionDir: session, isScanning: true, error: '' }))
-      try {
-        if (!(await $.fs.exists(root))) throw new Error(`폴더가 없습니다: ${root}`)
-        const { tree, visited, isTruncated } = await walkTree($, root, depth)
-        const paths = repoPaths(tree)
-        const infos = await mapLimited(paths, GIT_CONCURRENCY, path => inspectRepo($, path))
-        const byPath = new Map(paths.map((path, i) => [path, infos[i]!]))
-        const rows = flatten(tree, byPath)
-        await update($, nodes, () => rows)
-        await update($, scan, s => ({
-          ...s,
-          isRootRepo: tree.isRepo,
-          rootRepo: tree.isRepo ? (byPath.get(tree.path) ?? null) : null,
-          isScanning: false,
-          scannedAt: Date.now(),
-          visited,
-          isTruncated,
-        }))
-      } catch (err) {
-        const message = clean(err instanceof Error ? err.message : String(err))
-        await update($, nodes, () => [])
-        await update($, scan, s => ({
-          ...s, isRootRepo: false, rootRepo: null, isScanning: false, scannedAt: Date.now(), error: message,
-        }))
-      }
-    } while (again)
-  })().finally(() => {
-    running = undefined
-  })
-  return running
 }
 
-const rememberRoot = async ($: $, root: string) => {
+// one scan at a time; a request during a scan runs one more after it
+const scanner: { running: Promise<void> | undefined; again: boolean } = { running: undefined, again: false }
+
+async function scanLoop($: Engine) {
+  try {
+    do {
+      scanner.again = false
+      await scanOnce($)
+    } while (scanner.again)
+  } finally {
+    scanner.running = undefined
+  }
+}
+
+function rescan($: Engine): Promise<void> {
+  if (scanner.running) {
+    scanner.again = true
+    return scanner.running
+  }
+  scanner.running = scanLoop($)
+  return scanner.running
+}
+
+async function rememberRoot($: Engine, root: string) {
   const stored = await $.store.get(STORE_RECENT)
   const list = Array.isArray(stored) ? stored.filter((x): x is string => typeof x === 'string') : []
   await $.store.set(STORE_RECENT, [root, ...list.filter(x => x !== root)].slice(0, 6))
 }
 
-const recentRoots = async ($: $): Promise<string[]> => {
+async function recentRoots($: Engine): Promise<string[]> {
   const stored = await $.store.get(STORE_RECENT)
   return Array.isArray(stored) ? stored.filter((x): x is string => typeof x === 'string') : []
 }
 
 /** '' goes back to the session's folder. */
-const setRoot = async ($: $, value: string) => {
+async function setRoot($: Engine, value: string) {
   const root = value.trim().replace(/^"(.*)"$/, '$1')
   await update($, rootChoice, () => root)
   await update($, collapsed, () => [])
@@ -275,18 +322,35 @@ const setRoot = async ($: $, value: string) => {
   await rescan($)
 }
 
+async function toggleFold($: Engine, path: string) {
+  await update($, collapsed, list => (list.includes(path) ? list.filter(p => p !== path) : [...list, path]))
+}
+
+async function changeDepth($: Engine, delta: number) {
+  await update($, maxDepth, d => Math.min(10, Math.max(1, d + delta)))
+  await rescan($)
+}
+
+async function copyPath($: Engine, path: string, surface: UiPressArgument['surface']) {
+  await $.ui.copy({ text: path, surface })
+}
+
 // ---------------------------------------------------------------- drawing
 
-const pad2 = (n: number) => String(n).padStart(2, '0')
-const clockText = (ms: number) => {
+function pad2(n: number) {
+  return String(n).padStart(2, '0')
+}
+
+function clockText(ms: number) {
   if (!ms) return '-'
   const d = new Date(ms)
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
 }
 
-const samePath = (a: string, b: string) =>
-  a.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase() === b.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
-
+function samePath(a: string, b: string) {
+  const norm = (p: string) => p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
+  return norm(a) === norm(b)
+}
 
 export const register: Register = on => {
   let debounce: { cancel: () => void } | undefined
@@ -298,7 +362,7 @@ export const register: Register = on => {
     })
     void $.ui.open({ id: PANE, title: TITLE })
     void rescan($)
-    $.clock.every(REFRESH_MS, () => void rescan($))
+    $.clock.every(REFRESH_MS, () => rescan($))
     return next(e)
   })
 
@@ -314,7 +378,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const result = await next(e)
     debounce?.cancel()
-    debounce = $.clock.after(1500, () => void rescan($))
+    debounce = $.clock.after(1500, () => rescan($))
     return result
   })
 
@@ -342,9 +406,6 @@ export const register: Register = on => {
     const isSessionRoot = info.root !== '' && samePath(info.root, info.sessionDir)
     const foldable = rows.filter(row => row.hasChildren).map(row => row.path)
     const showRowActions = hasHover || isMenuOpen
-
-    const toggle = (path: string) =>
-      void update($, collapsed, list => (list.includes(path) ? list.filter(p => p !== path) : [...list, path]))
 
     // branch, sync and change chips on one line; every chip carries its own leading space
     const repoSummary = (r: RepoInfo) =>
@@ -392,13 +453,13 @@ export const register: Register = on => {
           ? { position: 'absolute' as const, top: 0, right: 0, display: 'none' as const, hover: { display: 'flex' as const } }
           : {})}
       >
-        <Button key={`root:${path}`} label="⤴ 루트로" variant="secondary" onPress={() => void setRoot($, path)} />
+        <Button key={`root:${path}`} label="⤴ 루트로" variant="secondary" onPress={() => setRoot($, path)} />
         {isRepo ? (
           <Button
             key={`copy:${path}`}
             label="⧉ 복사"
             variant="secondary"
-            onPress={press => void $.ui.copy({ text: path, surface: press.surface })}
+            onPress={press => copyPath($, path, press.surface)}
           />
         ) : null}
       </Box>
@@ -418,7 +479,7 @@ export const register: Register = on => {
           <Box flexDirection="row" alignItems="center">
             <Box width={SLOT} flexShrink={0}>
               {node.hasChildren ? (
-                <Button key={`fold:${node.path}`} label={isFolded ? '▸' : '▾'} plain onPress={() => toggle(node.path)} />
+                <Button key={`fold:${node.path}`} label={isFolded ? '▸' : '▾'} plain onPress={() => toggleFold($, node.path)} />
               ) : (
                 <Text> </Text>
               )}
@@ -455,20 +516,20 @@ export const register: Register = on => {
               {isSessionRoot ? <Text dimColor> · 세션 폴더</Text> : null}
             </Text>
             <Box flexDirection="row" gap={1} flexShrink={0}>
-              <Button key="refresh" label="⟳" hotkey="r" variant="secondary" onPress={() => void rescan($)} />
+              <Button key="refresh" label="⟳" hotkey="r" variant="secondary" onPress={() => rescan($)} />
               <Button
                 key="filter"
                 label="변경만"
                 hotkey="f"
                 variant={dirtyOnly ? 'primary' : 'secondary'}
-                onPress={() => void update($, onlyDirty, v => !v)}
+                onPress={() => update($, onlyDirty, v => !v)}
               />
               <Button
                 key="menu"
                 label={isMenuOpen ? '✕' : '⋯'}
                 hotkey="p"
                 variant="secondary"
-                onPress={() => void update($, isEditingRoot, v => !v)}
+                onPress={() => update($, isEditingRoot, v => !v)}
               />
             </Box>
           </Box>
@@ -498,18 +559,18 @@ export const register: Register = on => {
                   placeholder="폴더 경로 (예: D:\projects)"
                   value={info.root}
                   submitLabel="적용"
-                  onSubmit={value => void setRoot($, value)}
+                  onSubmit={value => setRoot($, value)}
                 />
               ) : (
                 <Text dimColor>/git-workspace &lt;폴더 경로&gt;</Text>
               )}
               <Box flexDirection="row" gap={1} flexWrap="wrap">
-                <Button key="session-root" label="세션 폴더" variant="secondary" onPress={() => void setRoot($, '')} />
+                <Button key="session-root" label="세션 폴더" variant="secondary" onPress={() => setRoot($, '')} />
                 <Button
                   key="parent-root"
                   label="상위 폴더"
                   variant="secondary"
-                  onPress={() => void setRoot($, parentOf(info.root || info.sessionDir))}
+                  onPress={() => setRoot($, parentOf(info.root || info.sessionDir))}
                 />
               </Box>
             </Box>
@@ -518,7 +579,7 @@ export const register: Register = on => {
               <Box flexDirection="column">
                 <Text dimColor>최근</Text>
                 {recent.map(path => (
-                  <Button key={`recent:${path}`} plain dimColor onPress={() => void setRoot($, path)}>
+                  <Button key={`recent:${path}`} plain dimColor onPress={() => setRoot($, path)}>
                     {clean(baseName(path))} <Text dimColor>{clean(parentOf(path))}</Text>
                   </Button>
                 ))}
@@ -530,21 +591,21 @@ export const register: Register = on => {
                 key="fold-all"
                 label={folded.size > 0 ? '모두 펼치기' : '모두 접기'}
                 variant="secondary"
-                onPress={() => void update($, collapsed, list => (list.length > 0 ? [] : foldable))}
+                onPress={() => update($, collapsed, list => (list.length > 0 ? [] : foldable))}
               />
               <Text dimColor>깊이</Text>
               <Button
                 key="depth-down"
                 label="−"
                 variant="secondary"
-                onPress={() => void update($, maxDepth, d => Math.max(1, d - 1)).then(() => rescan($))}
+                onPress={() => changeDepth($, -1)}
               />
               <Text>{depth}</Text>
               <Button
                 key="depth-up"
                 label="+"
                 variant="secondary"
-                onPress={() => void update($, maxDepth, d => Math.min(10, d + 1)).then(() => rescan($))}
+                onPress={() => changeDepth($, 1)}
               />
             </Box>
 

@@ -35,16 +35,56 @@ commit with its age.
 
 ## What it reads, runs and sends
 
-- **Reads** folder listings under the scan root, and the `.git` file of worktrees and submodules.
-  It skips `node_modules`, `dist`, `build`, `vendor`, dot-folders and similar, and stops after 5000
+### Reads
+
+- Folder listings under the scan root.
+- The `.git` file of worktrees and submodules, to tell which kind they are.
+- It skips `node_modules`, `dist`, `build`, `vendor`, dot-folders and similar, and stops after 5000
   folders.
-- **Runs** the local `git` executable, read-only: `config --get-regexp`, `status --porcelain`,
-  `log -1` and `symbolic-ref`. Repositories are treated as untrusted. Every call turns off settings
-  that could start a program (fsmonitor, hooks, pager, external diff, signature programs). A
-  repository that defines its own filter drivers gets its branch shown without `git status`.
-  Control characters are stripped from everything shown.
-- **Sends** nothing. It makes no network requests and collects no data. The only thing it stores
-  is your list of recently used scan roots, in Claude Code's local plugin store.
+
+### Runs: `git` only
+
+The mod runs one program: the local `git` executable. It needs `git` to read each repository's
+branch, upstream, ahead/behind counts, changed files and last commit. It never writes to a
+repository, never fetches, and never contacts a remote. These are the four commands, written as
+fixed text in `hooks/register.tsx`. `<repo>` is the repository's folder, and every call has the
+safety options shown under it.
+
+| Purpose | Command |
+| --- | --- |
+| Find filter drivers the repository sets for itself | `git -C <repo> config --show-scope --name-only --get-regexp ^filter\.` |
+| Branch, upstream, ahead/behind, changed files | `git -C <repo> status --porcelain=v2 --branch --untracked-files=normal --ignore-submodules=all` |
+| Branch only, when status is skipped | `git -C <repo> symbolic-ref --quiet --short HEAD` |
+| Last commit | `git -C <repo> log -1 --no-show-signature --format=%h %s%x1f%cr` |
+
+Scanned repositories are treated as untrusted. Every call passes
+`-c core.fsmonitor=false -c core.hooksPath= -c core.pager=cat -c diff.external=
+-c log.showSignature=false -c gpg.program=false -c gpg.ssh.program=false
+-c gpg.x509.program=false --no-pager --no-optional-locks`, so repository config cannot make git
+start another program. It also sets `GIT_TERMINAL_PROMPT=0`, so git never prompts. A repository
+that defines its own filter drivers, or whose config cannot be read, gets its branch shown
+without `git status`. Control characters are stripped from everything shown.
+
+### Sends: nothing over the network
+
+- It makes no network requests and sends no data anywhere.
+- Pressing **⧉ 복사** (copy) puts that repository's folder path on your clipboard through Claude
+  Code's clipboard call (`$.ui.copy`). That happens only when you press it.
+- It stores only your list of recently used scan roots, in Claude Code's local plugin store
+  (`$.store`). The scan results stay in the session's own state.
+
+## Hooks and command
+
+- `session.start`: registers `/git-workspace`, opens the pane, starts a scan and a 60-second
+  refresh timer. It then passes the event on unchanged.
+- `command.run` for `/git-workspace` only: opens the pane. With a folder argument it sets the
+  scan root. It answers with one line naming the scan root, and handles no other command.
+- `tool.call` for `Bash` only: lets the call run unchanged, returns its result unchanged, and
+  schedules a rescan 1.5 seconds later. A Bash command may have switched branches, committed or
+  pulled. It never blocks, rewrites or delays a call.
+- `ui.render` for its own pane: draws the tree.
+
+It changes no settings or permissions, and adds no tools, agents or subagents.
 
 ## Install
 
