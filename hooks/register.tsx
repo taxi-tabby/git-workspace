@@ -32,6 +32,8 @@ const GIT_CONCURRENCY = 6
 const FS_CONCURRENCY = 8
 const MAX_VISITED = 5000
 const DEFAULT_DEPTH = 4
+/** Below this many columns the header and each row stack instead of sharing a line. */
+const NARROW_COLUMNS = 48
 const SKIP_DIRS = new Set([
   'node_modules', 'vendor', 'venv', '__pycache__', 'target', 'dist', 'build', 'out', 'obj', 'Pods',
   '$RECYCLE.BIN', 'System Volume Information',
@@ -434,14 +436,21 @@ export const register: Register = (on, options) => {
     const syncTotal = allRepos.filter(r => r.ahead > 0 || r.behind > 0).length
     const isSessionRoot = info.root !== '' && samePath(info.root, info.sessionDir)
     const foldable = rows.filter(row => row.hasChildren).map(row => row.path)
-    const showRowActions = hasHover || isMenuOpen
 
-    // branch, sync and change chips on one line; every chip carries its own leading space
-    const repoSummary = (r: RepoInfo) =>
+    // Layout rule: one line of text is ONE Text (nested Texts inside it for color), never
+    // several Texts side by side. Side-by-side Texts each shrink in a narrow pane until
+    // they are one character wide and read top to bottom. A Text that owns its whole
+    // line truncates instead.
+    const width = e.props.bodyColumns > 0 ? e.props.bodyColumns : (e.viewport?.columns ?? 80)
+    const isNarrow = width < NARROW_COLUMNS
+    const indentOf = (depth: number) => Math.min(depth * 2, Math.floor(width / 4))
+
+    // branch, sync and change chips, as Texts to nest inside a line's Text
+    const summaryParts = (r: RepoInfo) =>
       r.error ? (
-        <Text color="error" wrap="truncate-end"> ✕ {r.error}</Text>
+        <Text color="error"> ✕ {r.error}</Text>
       ) : (
-        <Text wrap="truncate-end">
+        <Text>
           <Text color={r.isDetached ? 'warning' : 'suggestion'}> ⎇ {r.branch}</Text>
           {r.ahead ? <Text color="success"> ↑{r.ahead}</Text> : null}
           {r.behind ? <Text color="warning"> ↓{r.behind}</Text> : null}
@@ -461,6 +470,8 @@ export const register: Register = (on, options) => {
         </Text>
       )
 
+    const repoSummary = (r: RepoInfo) => <Text wrap="truncate-end">{summaryParts(r)}</Text>
+
     const repoDetail = (r: RepoInfo, indent: number) =>
       r.lastCommit || r.warning ? (
         <Box flexDirection="column" paddingLeft={indent}>
@@ -474,25 +485,12 @@ export const register: Register = (on, options) => {
         </Box>
       ) : null
 
-    const rowActions = (path: string, isRepo: boolean) => (
-      <Box
-        flexDirection="row"
-        gap={1}
-        {...(hasHover
-          ? { position: 'absolute' as const, top: 0, right: 0, display: 'none' as const, hover: { display: 'flex' as const } }
-          : {})}
-      >
-        <Button key={`root:${path}`} label={T.setRoot} variant="secondary" onPress={() => setRoot($, path)} />
-        {isRepo ? (
-          <Button
-            key={`copy:${path}`}
-            label={T.copy}
-            variant="secondary"
-            onPress={press => copyPath($, path, press.surface)}
-          />
-        ) : null}
-      </Box>
-    )
+    const actionButtons = (path: string, isRepo: boolean) => [
+      <Button key={`root:${path}`} label={T.setRoot} variant="secondary" onPress={() => setRoot($, path)} />,
+      isRepo ? (
+        <Button key={`copy:${path}`} label={T.copy} variant="secondary" onPress={press => copyPath($, path, press.surface)} />
+      ) : null,
+    ]
 
     const SLOT = 3 // width of the fold toggle column; detail lines indent past it and the icon
     const row = (node: TreeNode, index: number) => {
@@ -503,9 +501,11 @@ export const register: Register = (on, options) => {
       const belowChanged = isRepo && node.repo && needsAttention(node.repo) ? c.changed - 1 : c.changed
       const prev = shown[index - 1]
       const isGroupEdge = node.depth === 0 && index > 0 && (node.hasChildren || prev?.hasChildren === true || (prev?.depth ?? 0) > 0)
+      // wide: name and status share one line; narrow: status gets a line of its own
+      const isInlineSummary = !isNarrow && node.repo !== null
       return (
-        <Box key={`row:${node.path}`} flexDirection="column" paddingLeft={node.depth * 2} marginTop={isGroupEdge ? 1 : 0}>
-          <Box flexDirection="row" alignItems="center">
+        <Box key={`row:${node.path}`} flexDirection="column" paddingLeft={indentOf(node.depth)} marginTop={isGroupEdge ? 1 : 0}>
+          <Box flexDirection="row">
             <Box width={SLOT} flexShrink={0}>
               {node.hasChildren ? (
                 <Button key={`fold:${node.path}`} label={isFolded ? '▸' : '▾'} plain onPress={() => toggleFold($, node.path)} />
@@ -513,7 +513,7 @@ export const register: Register = (on, options) => {
                 <Text> </Text>
               )}
             </Box>
-            <Box flexGrow={1} flexShrink={1} flexDirection="row">
+            <Box flexGrow={1} flexShrink={1} minWidth={0}>
               <Text wrap="truncate-end">
                 <Text color={isRepo ? 'claude' : 'subtle'}>{isRepo ? '◆' : '▪'}</Text>{' '}
                 <Text bold={isRepo}>{node.label}</Text>
@@ -525,43 +525,79 @@ export const register: Register = (on, options) => {
                     {belowChanged > 0 ? <Text color="warning"> ({T.changedBelow(belowChanged)})</Text> : null}
                   </Text>
                 ) : null}
+                {isInlineSummary && node.repo ? summaryParts(node.repo) : null}
               </Text>
-              {node.repo ? repoSummary(node.repo) : null}
             </Box>
-            {showRowActions ? rowActions(node.path, isRepo) : null}
+            {hasHover ? (
+              // floats over the row's right end on hover: takes no room, moves nothing
+              <Box
+                flexDirection="row"
+                gap={1}
+                position="absolute"
+                top={0}
+                right={0}
+                display="none"
+                hover={{ display: 'flex' }}
+              >
+                {actionButtons(node.path, isRepo)}
+              </Box>
+            ) : null}
           </Box>
+          {!isInlineSummary && node.repo ? <Box paddingLeft={SLOT}>{repoSummary(node.repo)}</Box> : null}
           {node.repo ? repoDetail(node.repo, SLOT + 2) : null}
+          {!hasHover && isMenuOpen ? (
+            // no pointer: the actions get a line of their own while the menu is open
+            <Box flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={SLOT + 2}>
+              {actionButtons(node.path, isRepo)}
+            </Box>
+          ) : null}
         </Box>
       )
     }
 
+    const headerButtons = (
+      <Box flexDirection="row" gap={1} flexShrink={0}>
+        <Button key="refresh" label="⟳" hotkey="r" variant="secondary" onPress={() => rescan($)} />
+        <Button
+          key="filter"
+          label={T.changedOnly}
+          hotkey="f"
+          variant={dirtyOnly ? 'primary' : 'secondary'}
+          onPress={() => update($, onlyDirty, v => !v)}
+        />
+        <Button
+          key="menu"
+          label={isMenuOpen ? '✕' : '⋯'}
+          hotkey="p"
+          variant="secondary"
+          onPress={() => update($, isEditingRoot, v => !v)}
+        />
+      </Box>
+    )
+    const headerTitle = (
+      <Text bold wrap="truncate-end">
+        {clean(baseName(info.root)) || T.computing}
+        {isSessionRoot ? <Text dimColor> · {T.sessionFolder}</Text> : null}
+      </Text>
+    )
+
     return (
       <Box flexDirection="column" gap={1}>
-        {/* header: where we are + three controls */}
+        {/* header: where we are + three controls (stacked when narrow) */}
         <Box flexDirection="column">
-          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-            <Text bold wrap="truncate-end">
-              {clean(baseName(info.root)) || T.computing}
-              {isSessionRoot ? <Text dimColor> · {T.sessionFolder}</Text> : null}
-            </Text>
-            <Box flexDirection="row" gap={1} flexShrink={0}>
-              <Button key="refresh" label="⟳" hotkey="r" variant="secondary" onPress={() => rescan($)} />
-              <Button
-                key="filter"
-                label={T.changedOnly}
-                hotkey="f"
-                variant={dirtyOnly ? 'primary' : 'secondary'}
-                onPress={() => update($, onlyDirty, v => !v)}
-              />
-              <Button
-                key="menu"
-                label={isMenuOpen ? '✕' : '⋯'}
-                hotkey="p"
-                variant="secondary"
-                onPress={() => update($, isEditingRoot, v => !v)}
-              />
+          {isNarrow ? (
+            <Box flexDirection="column">
+              {headerTitle}
+              {headerButtons}
             </Box>
-          </Box>
+          ) : (
+            <Box flexDirection="row" alignItems="center" gap={1}>
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                {headerTitle}
+              </Box>
+              {headerButtons}
+            </Box>
+          )}
           <Text dimColor wrap="truncate-middle">{clean(info.root)}</Text>
           {info.isRootRepo && info.rootRepo ? repoSummary(info.rootRepo) : null}
           <Text dimColor>
@@ -590,7 +626,7 @@ export const register: Register = (on, options) => {
                 ? T.gitMissingBody
                 : T.gitOldBody}
             </Text>
-            <Box flexDirection="row" gap={1} alignItems="center">
+            <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
               <Link href="https://git-scm.com/downloads" label={T.gitDownload} />
               <Button key="git-recheck" label={T.checkAgain} variant="secondary" onPress={() => rescan($)} />
             </Box>
@@ -642,14 +678,16 @@ export const register: Register = (on, options) => {
                 variant="secondary"
                 onPress={() => update($, collapsed, list => (list.length > 0 ? [] : foldable))}
               />
-              <Text dimColor>{T.depth}</Text>
+              <Text dimColor wrap="truncate-end">{T.depth}</Text>
               <Button
                 key="depth-down"
                 label="−"
                 variant="secondary"
                 onPress={() => changeDepth($, -1)}
               />
-              <Text>{depth}</Text>
+              <Box flexShrink={0}>
+                <Text>{depth}</Text>
+              </Box>
               <Button
                 key="depth-up"
                 label="+"

@@ -132,3 +132,24 @@ test('English is the default', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /[가-힣]/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a narrow pane gives the status its own line; a wide one keeps it beside the name', async ($, on) => {
+  fakeHost(on, '2.52.0')
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const narrow = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns: 28 } })
+    await narrow.press({ key: 'refresh' })
+    // the name line holds only the name; the branch is a Text of its own below it
+    const nameLine = await narrow.find({ type: 'Text', text: /◆ lib/ })
+    expect(nameLine?.text).not.toMatch(/⎇/)
+    expect(await narrow.find({ type: 'Text', text: /^ ⎇ main/ })).toBeTruthy()
+    // header buttons are still all there
+    for (const key of ['refresh', 'filter', 'menu']) expect(await narrow.find({ type: 'Button', key })).toBeTruthy()
+    await narrow.unmount()
+
+    const wide = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns: 90 } })
+    await wide.press({ key: 'refresh' })
+    expect((await wide.find({ type: 'Text', text: /◆ lib/ }))?.text).toMatch(/◆ lib ⎇ main/)
+    await wide.unmount()
+  }
+})
