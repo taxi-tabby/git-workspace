@@ -119,6 +119,25 @@ export const parseGitVersion = (stdout: string): { version: string; isTooOld: bo
   return { version, isTooOld }
 }
 
+/**
+ * A `file:` URL for a folder, with the row action in its fragment
+ * ("D:\a b\c", "scan" -> "file:///D:/a%20b/c#scan"). Markdown links need a file:
+ * URL to be drawn as links; every character that could end a markdown link is encoded.
+ */
+export const actionHref = (path: string, action: 'scan' | 'copy'): string => {
+  const parts = path.replace(/\\/g, '/').split('/')
+  const encoded = parts
+    .map((part, i) => (i === 0 && /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)))
+    .join('/')
+    .replace(/[()]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  const rooted = encoded.startsWith('/') ? encoded : `/${encoded}`
+  return `file://${rooted}#${action}`
+}
+
+/** Which row action a pressed link names: the fragment actionHref put there. */
+export const actionOf = (href: string): 'scan' | 'copy' | null =>
+  href.endsWith('#copy') ? 'copy' : href.endsWith('#scan') ? 'scan' : null
+
 /** The first engine known to draw Text `size`, `weight` and `tabular` (older ones refuse them). */
 export const RICH_TEXT_SINCE: readonly [number, number, number] = [2, 1, 317]
 

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, supportsRichText, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
+import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, supportsRichText, actionHref, actionOf, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
 import type { RawNode } from '../hooks/tree'
 
 const repo = (path: string, children: RawNode[] = []): RawNode => ({
@@ -71,4 +71,8 @@ test('parsers', async () => {
   expect(supportsRichText('2.1.296')).toBe(false)
   expect(supportsRichText('1.9.999')).toBe(false)
   expect(supportsRichText('')).toBe(false)
+  expect(actionHref('D:\\a b\\c(1)', 'scan')).toBe('file:///D:/a%20b/c%281%29#scan')
+  expect(actionHref('/home/me/x', 'copy')).toBe('file:///home/me/x#copy')
+  expect(actionOf(actionHref('D:\\x', 'copy'))).toBe('copy')
+  expect(actionOf('https://example.com')).toBeNull()
 })

@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, TextProps, UiPressArgument } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, TextProps, UiPressArgument } from 'claude-code'
 
 import type { RepoInfo, ScanInfo, TreeNode } from '../types'
 import {
@@ -16,6 +16,8 @@ import {
   parseGitVersion,
   parseStatus,
   supportsRichText,
+  actionHref,
+  actionOf,
   subtreeCounts,
   untrustedFilters,
   visibleRows,
@@ -368,6 +370,13 @@ async function copyPath($: Engine, path: string, surface: UiPressArgument['surfa
   await $.ui.copy({ text: path, surface })
 }
 
+/** A pressed row link: scan from that folder, or copy its path. */
+async function rowLinkAction($: Engine, path: string, href: string, surface: UiPressArgument['surface']) {
+  const action = actionOf(href)
+  if (action === 'copy') await copyPath($, path, surface)
+  else if (action === 'scan') await setRoot($, path)
+}
+
 // ---------------------------------------------------------------- drawing
 
 function pad2(n: number) {
@@ -542,21 +551,39 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    const hideOnHover = hasHover ? { hover: { color: 'transparent' } } : {}
-    const commitLine = (r: RepoInfo, indent: number, inRow = false) =>
-      r.lastCommit || r.warning ? (
-        <Box flexDirection="column" paddingLeft={indent}>
-          {r.lastCommit ? (
-            <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-end" {...(inRow ? hideOnHover : {})}>
+    const commitLine = (r: RepoInfo, indent: number, trailing?: RenderChildren) => (
+      <Box flexDirection="column" paddingLeft={indent}>
+        <Box flexDirection="row" alignItems="center">
+          <Box flexGrow={1} flexShrink={1} minWidth={0}>
+            <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-end">
               {r.lastCommitAge ? `${r.lastCommitAge} · ` : ''}
-              {r.lastCommit}
+              {r.lastCommit || ' '}
             </Text>
-          ) : null}
-          {r.warning ? (
-            <Text {...rt({ size: 'caption' })} color="warning" wrap="truncate-end" {...(inRow ? hideOnHover : {})}>
-              {r.warning}
-            </Text>
-          ) : null}
+          </Box>
+          {trailing ?? null}
+        </Box>
+        {r.warning ? (
+          <Text {...rt({ size: 'caption' })} color="warning" wrap="truncate-end">
+            {r.warning}
+          </Text>
+        ) : null}
+      </Box>
+    )
+
+    // Desktop row actions: two text-sized links in a slot that always keeps its width
+    // and shows on hover, so nothing overlaps, reflows or changes height.
+    const Markdown = 'Markdown' in els ? els.Markdown : undefined
+    const ACTION_W = 6
+    const actionLinks = (path: string, isRepo: boolean) =>
+      hasHover && Markdown ? (
+        <Box flexShrink={0} width={ACTION_W} flexDirection="row" justifyContent="flex-end">
+          <Box display="none" hover={{ display: 'flex' }}>
+            <Markdown
+              key={`act:${path}`}
+              text={isRepo ? `[⤴](${actionHref(path, 'scan')})  [⧉](${actionHref(path, 'copy')})` : `[⤴](${actionHref(path, 'scan')})`}
+              onLinkPress={(link, press) => rowLinkAction($, path, link.href, press.surface)}
+            />
+          </Box>
         </Box>
       ) : null
 
@@ -625,23 +652,10 @@ export const register: Register = (on, options) => {
                 <Text {...rt({ size: 'footnote' })}>{summaryParts(node.repo, INLINE_BRANCH_MAX)}</Text>
               </Box>
             ) : null}
+            {node.repo ? null : actionLinks(node.path, false)}
           </Box>
           {!isInlineSummary && node.repo ? summaryLine(node.repo, NAME_INDENT) : null}
-          {node.repo ? commitLine(node.repo, NAME_INDENT, true) : null}
-          {hasHover ? (
-            // floats in on hover: takes no room and moves nothing. On a repo row it covers
-            // the commit line, which turns transparent meanwhile, so nothing shows through.
-            <Box
-              flexDirection="row"
-              gap={sp('sm', 1)}
-              position="absolute"
-              {...(node.repo ? { bottom: 0, left: indentOf(node.depth) + NAME_INDENT } : { top: 0, right: 0 })}
-              display="none"
-              hover={{ display: 'flex' }}
-            >
-              {actionButtons(node.path, isRepo)}
-            </Box>
-          ) : null}
+          {node.repo ? commitLine(node.repo, NAME_INDENT, actionLinks(node.path, true)) : null}
           {!hasHover && isMenuOpen ? (
             <Box flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={NAME_INDENT}>
               {actionButtons(node.path, isRepo)}
@@ -737,7 +751,7 @@ export const register: Register = (on, options) => {
             </Text>
           </Box>
           {info.isRootRepo && info.rootRepo ? summaryLine(info.rootRepo, ICON_W) : null}
-          {info.isRootRepo && info.rootRepo ? commitLine(info.rootRepo, ICON_W) : null}
+          {info.isRootRepo && info.rootRepo && (info.rootRepo.lastCommit || info.rootRepo.warning) ? commitLine(info.rootRepo, ICON_W) : null}
           <Box marginTop={1} flexDirection="column">
             {Svg && allRepos.length > 0 ? (
               <Svg

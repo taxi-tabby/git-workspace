@@ -101,9 +101,15 @@ test('the tree and the menu draw on desktop and terminal', async ($, on) => {
     await ui.press({ key: 'menu' })
     expect(await ui.find({ type: 'Text', text: /Depth/ })).toBeTruthy()
     expect(await ui.find({ type: 'Button', key: 'recent:D:/old/place' })).toBeTruthy()
-    // row actions: hover overlay on desktop, inline (menu open) on the terminal — reachable either way
-    expect(await ui.find({ type: 'Button', key: 'root:/ws/group' })).toBeTruthy()
-    expect(await ui.find({ type: 'Button', key: 'copy:/ws/app/lib' })).toBeTruthy()
+    // row actions: text-sized hover links on desktop, buttons while the menu is open elsewhere
+    if (surface === 'desktop') {
+      expect(await ui.find({ type: 'Markdown', key: 'act:/ws/group' })).toBeTruthy()
+      expect(await ui.find({ type: 'Markdown', key: 'act:/ws/app/lib' })).toBeTruthy()
+      expect(await ui.find({ type: 'Button', key: 'root:/ws/group' })).toBeUndefined()
+    } else {
+      expect(await ui.find({ type: 'Button', key: 'root:/ws/group' })).toBeTruthy()
+      expect(await ui.find({ type: 'Button', key: 'copy:/ws/app/lib' })).toBeTruthy()
+    }
     await ui.press({ key: 'menu' })
     await ui.unmount()
   }

@@ -57,7 +57,7 @@ const en = {
   depth: 'Depth',
   legendKinds: '◆ repo ▪ folder · ↑ to push ↓ to pull · local = no upstream',
   legendChanges: '+ staged ~ modified ? untracked ! conflict · ✓ clean · ⚠ status skipped',
-  legendHover: 'Hover a row for ⤴ Scan here · ⧉ Copy path',
+  legendHover: 'Hover a row: ⤴ scan from there · ⧉ copy its path',
   gitVersion: (version: string) => (version ? `git ${version}` : 'git not found'),
 
   // empty states
@@ -128,7 +128,7 @@ const ko: Strings = {
   depth: '깊이',
   legendKinds: '◆ 저장소 ▪ 폴더 · ↑ 보낼 커밋 ↓ 받을 커밋 · 로컬 = upstream 없음',
   legendChanges: '+ 스테이지 ~ 수정 ? 새 파일 ! 충돌 · ✓ 깨끗함 · ⚠ 상태 조회 건너뜀',
-  legendHover: '행에 마우스를 올리면 ⤴ 루트로 · ⧉ 복사',
+  legendHover: '행에 마우스를 올리면: ⤴ 거기서 스캔 · ⧉ 경로 복사',
   gitVersion: version => (version ? `git ${version}` : 'git 없음'),
 
   noChildRepos: '하위 저장소가 없습니다.',
