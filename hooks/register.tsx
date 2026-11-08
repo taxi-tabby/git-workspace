@@ -885,7 +885,7 @@ export const register: Register = (on, options) => {
     const ICON_W = Svg ? 3 : 2 // the icon's column, with a little air before the label
     // the fold chevron's column; a flat list has nothing to fold, so it keeps one cell of air
     // every repository row has a details toggle, so the column is there whenever rows are
-    const SLOT = rows.length > 0 ? 3 : 1
+    const SLOT = 3
     const NAME_INDENT = SLOT + ICON_W // secondary lines line up with the name
 
     const icon = (name: IconName, color: 'subtle' | 'claude' | 'suggestion' | 'warning' = 'subtle') => (
@@ -948,9 +948,16 @@ export const register: Register = (on, options) => {
         : 2) +
       ICON_W
 
+    // Alignment rule: every indent is a fixed-width empty cell in a row, the same kind of
+    // cell the chevron and the icon sit in. Padding is never used to indent: a surface may
+    // size it by the text size of what it holds, so captions and body text drift apart.
+    const gutter = (cells: number, key?: string) =>
+      cells > 0 ? <Box key={key} width={cells} flexShrink={0} /> : null
+
     // the status on a line of its own: branch icon, then the chips
     const summaryLine = (r: RepoInfo, indent: number) => (
-      <Box flexDirection="row" paddingLeft={indent}>
+      <Box flexDirection="row">
+        {gutter(indent)}
         {r.error ? null : icon('branch', 'suggestion')}
         <Box flexGrow={1} flexShrink={1} minWidth={0}>
           <Text {...rt({ size: 'footnote' })} wrap="truncate-end">
@@ -961,8 +968,9 @@ export const register: Register = (on, options) => {
     )
 
     const commitLine = (r: RepoInfo, indent: number, trailing?: RenderChildren) => (
-      <Box flexDirection="column" paddingLeft={indent}>
+      <Box flexDirection="column">
         <Box flexDirection="row" alignItems="center">
+          {gutter(indent)}
           <Box flexGrow={1} flexShrink={1} minWidth={0}>
             <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-end">
               {r.lastCommitAge ? `${r.lastCommitAge} · ` : ''}
@@ -972,9 +980,14 @@ export const register: Register = (on, options) => {
           {trailing ?? null}
         </Box>
         {r.warning ? (
-          <Text {...rt({ size: 'caption' })} color="warning" wrap="truncate-end">
-            {r.warning}
-          </Text>
+          <Box flexDirection="row">
+            {gutter(indent)}
+            <Box flexGrow={1} flexShrink={1} minWidth={0}>
+              <Text {...rt({ size: 'caption' })} color="warning" wrap="truncate-end">
+                {r.warning}
+              </Text>
+            </Box>
+          </Box>
         ) : null}
       </Box>
     )
@@ -1078,7 +1091,9 @@ export const register: Register = (on, options) => {
     const countLabel = (total: number) => String(total)
 
     const detailPanel = (r: RepoInfo, d: RepoDetail | null, indent: number) => (
-      <Box flexDirection="column" marginLeft={indent} marginTop={sp('xs', 0)} gap={sp('sm', 1)} {...groupProps}>
+      <Box flexDirection="row" marginTop={sp('xs', 0)}>
+        {gutter(indent)}
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={sp('sm', 1)} {...groupProps}>
         {!d || !d.hasLoaded ? (
           <Text {...rt({ size: 'caption' })} dimColor>
             {T.loading}
@@ -1136,6 +1151,7 @@ export const register: Register = (on, options) => {
             ) : null,
           ]
         )}
+        </Box>
       </Box>
     )
 
@@ -1158,12 +1174,13 @@ export const register: Register = (on, options) => {
       return (
         <Box
           key={`row:${node.path}`}
-          flexDirection="column"
-          paddingLeft={indentOf(node.depth)}
-          paddingY={sp('xs', 0)}
-          marginTop={isGroupEdge ? 1 : 0}
-          {...hoverRow}
+          flexDirection="row"
+          paddingY={hasHover ? 0 : sp('xs', 0)}
+          marginTop={!hasHover && isGroupEdge ? 1 : !isRepo && index > 0 ? sp('sm', 0) : 0}
+          {...(isRepo ? hoverRow : {})}
         >
+          {gutter(indentOf(node.depth))}
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={isRepo && hasHover ? sp('xs', 0) : 0} {...(isRepo ? itemCard : {})}>
           <Box flexDirection="row" alignItems="center">
             <Box width={SLOT} flexShrink={0} alignItems="center">
               {isRepo && !node.repo?.isNetworkGitdir ? (
@@ -1212,10 +1229,14 @@ export const register: Register = (on, options) => {
           {node.repo ? commitLine(node.repo, NAME_INDENT, actionLinks(node.path, true)) : null}
           {isOpen && node.repo ? detailPanel(node.repo, openDetail, NAME_INDENT) : null}
           {!hasHover && isMenuOpen ? (
-            <Box flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={NAME_INDENT}>
-              {actionButtons(node.path, isRepo)}
+            <Box flexDirection="row">
+              {gutter(NAME_INDENT)}
+              <Box flexDirection="row" flexWrap="wrap" gap={1}>
+                {actionButtons(node.path, isRepo)}
+              </Box>
             </Box>
           ) : null}
+          </Box>
         </Box>
       )
     }
@@ -1244,8 +1265,22 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    const rootOpen = opened === info.root
     const rootLine = (
       <Box flexDirection="row" alignItems="center">
+        <Box width={SLOT} flexShrink={0} alignItems="center">
+          {info.isRootRepo && info.rootRepo && !info.rootRepo.isNetworkGitdir ? (
+            <Button
+              key="open:(root)"
+              label={rootOpen ? '▾' : '▸'}
+              plain
+              dimColor={!rootOpen}
+              onPress={() => toggleDetail($, info.root)}
+            />
+          ) : (
+            <Text> </Text>
+          )}
+        </Box>
         {icon(info.isRootRepo ? 'repo' : 'folder', info.isRootRepo ? 'claude' : 'subtle')}
         <Box flexGrow={1} flexShrink={1} minWidth={0}>
           <Text {...rt({ weight: 'semibold' })} wrap="truncate-end">
@@ -1269,6 +1304,13 @@ export const register: Register = (on, options) => {
     const groupProps = hasHover
       ? { borderStyle: 'round', borderDimColor: true, backgroundColor: INSET_BG, paddingX: sp('md', 1), paddingY: sp('sm', 0) }
       : { borderStyle: 'round', borderDimColor: true, paddingX: 1 }
+
+    // one repository = one card on desktop; cards sit apart in a plain list. The terminal,
+    // where a frame costs two rows each, keeps a single framed list instead.
+    const itemCard = hasHover
+      ? { borderStyle: 'round', borderDimColor: true, backgroundColor: INSET_BG, paddingX: sp('md', 1), paddingY: sp('sm', 0) }
+      : {}
+    const listProps = hasHover ? { gap: sp('sm', 0) } : groupProps
 
     const legendKinds = Svg ? (
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
@@ -1298,47 +1340,51 @@ export const register: Register = (on, options) => {
         </Box>
 
         {/* WORKSPACE card: where we are and a status bar */}
-        <Box flexDirection="column" {...groupProps}>
-          {rootLine}
-          <Box paddingLeft={ICON_W}>
-            <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-middle">
-              {clean(info.root)}
-            </Text>
+        <Box flexDirection="column" gap={sp('sm', 1)} {...groupProps}>
+          {/* 1. where: name and path */}
+          <Box flexDirection="column">
+            {rootLine}
+            <Box flexDirection="row">
+              {gutter(NAME_INDENT)}
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-middle">
+                  {clean(info.root)}
+                </Text>
+              </Box>
+            </Box>
           </Box>
-          {info.isRootRepo && info.rootRepo ? summaryLine(info.rootRepo, ICON_W) : null}
-          {info.isRootRepo && info.rootRepo && (info.rootRepo.lastCommit || info.rootRepo.warning) ? commitLine(info.rootRepo, ICON_W) : null}
+          {/* 2. the root repository's state */}
           {info.isRootRepo && info.rootRepo ? (
-            <Box paddingLeft={ICON_W} flexDirection="row">
-              <Button
-                key="open:(root)"
-                label={opened === info.root ? `▾ ${T.hideDetails}` : `▸ ${T.showDetails}`}
-                plain
-                dimColor
-                onPress={() => toggleDetail($, info.root)}
-              />
+            <Box flexDirection="column">
+              {summaryLine(info.rootRepo, NAME_INDENT)}
+              {info.rootRepo.lastCommit || info.rootRepo.warning ? commitLine(info.rootRepo, NAME_INDENT) : null}
+              {rootOpen ? detailPanel(info.rootRepo, openDetail, NAME_INDENT) : null}
             </Box>
           ) : null}
-          {info.isRootRepo && info.rootRepo && opened === info.root ? detailPanel(info.rootRepo, openDetail, ICON_W) : null}
-          <Box marginTop={1} flexDirection="column">
-            {Svg && allRepos.length > 0 ? (
-              <Svg
-                source={statusBar(cleanTotal, dirtyTotal, syncOnly)}
-                alt={T.statusBarAlt(cleanTotal, dirtyTotal, syncOnly)}
-                height={4}
-              />
-            ) : null}
-            {statsText}
+          {/* 3. everything under it, in one bar and one line, on the name's column */}
+          <Box flexDirection="row">
+            {gutter(NAME_INDENT)}
+            <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={sp('xs', 0)}>
+              {Svg && allRepos.length > 0 ? (
+                <Svg
+                  source={statusBar(cleanTotal, dirtyTotal, syncOnly)}
+                  alt={T.statusBarAlt(cleanTotal, dirtyTotal, syncOnly)}
+                  height={4}
+                />
+              ) : null}
+              {statsText}
+              {info.isTruncated ? (
+                <Text {...rt({ size: 'footnote' })} color="warning">
+                  {T.truncated(info.visited)}
+                </Text>
+              ) : null}
+              {info.error ? (
+                <Text {...rt({ size: 'footnote' })} color="error">
+                  {info.error}
+                </Text>
+              ) : null}
+            </Box>
           </Box>
-          {info.isTruncated ? (
-            <Text {...rt({ size: 'footnote' })} color="warning">
-              {T.truncated(info.visited)}
-            </Text>
-          ) : null}
-          {info.error ? (
-            <Text {...rt({ size: 'footnote' })} color="error">
-              {info.error}
-            </Text>
-          ) : null}
         </Box>
 
         {/* git missing or too old: say so plainly, with where to get it */}
@@ -1403,10 +1449,13 @@ export const register: Register = (on, options) => {
                       {/* a short fixed label: the folder's own name */}
                       <Button key={`recent:${path}`} label={clean(baseName(path)) || clean(path)} plain onPress={() => setRoot($, path)} />
                     </Box>
-                    <Box paddingLeft={ICON_W}>
-                      <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-middle">
-                        {clean(parentOf(path))}
-                      </Text>
+                    <Box flexDirection="row">
+                      {gutter(ICON_W)}
+                      <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                        <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-middle">
+                          {clean(parentOf(path))}
+                        </Text>
+                      </Box>
                     </Box>
                   </Box>
                 ))}
@@ -1452,11 +1501,13 @@ export const register: Register = (on, options) => {
 
         {/* REPOSITORIES card: the tree */}
         {heading(T.sectionRepos, rows.length ? String(repoCount) : undefined)}
-        <Box flexDirection="column" {...groupProps}>
+        <Box flexDirection="column" {...listProps}>
           {shown.length === 0 && !info.isScanning ? (
-            <Text {...rt({ size: 'footnote' })} dimColor>
-              {rows.length === 0 ? (info.isRootRepo ? T.noChildRepos : T.noRepos(depth)) : T.noChangedRepos}
-            </Text>
+            <Box flexDirection="column" {...(hasHover ? itemCard : {})}>
+              <Text {...rt({ size: 'footnote' })} dimColor>
+                {rows.length === 0 ? (info.isRootRepo ? T.noChildRepos : T.noRepos(depth)) : T.noChangedRepos}
+              </Text>
+            </Box>
           ) : null}
           {shown.map(row)}
         </Box>
