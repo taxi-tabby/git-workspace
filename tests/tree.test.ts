@@ -57,7 +57,9 @@ test('parsers', async () => {
   expect([s.staged, s.unstaged, s.untracked, s.conflicts]).toEqual([1, 0, 1, 1])
   expect(gitKindOfFile('gitdir: D:/x/.git/worktrees/wt')).toBe('worktree')
   expect(gitKindOfFile('gitdir: ../.git/modules/lib')).toBe('submodule')
-  expect(untrustedFilters('global\tfilter.lfs.clean\nlocal\tfilter.evil.smudge\nlocal\tfilter.evil.required')).toEqual(['evil'])
+  expect(untrustedFilters('global\tfilter.lfs.clean\nlocal\tfilter.evil.smudge\nlocal\tfilter.evil.required')).toHaveLength(2)
+  // a crafted local key is untrusted whatever its last part
+  expect(untrustedFilters('local\tfilter.lfs.process=calc .required')).toEqual(['filter.lfs.process=calc .required'])
   expect(parentOf('D:\\projects\\x')).toBe('D:\\projects')
   expect(parentOf('D:\\projects')).toBe('D:/')
   expect(parentOf('D:/')).toBe('D:/')
@@ -89,7 +91,15 @@ test('parsers', async () => {
   // a record whose hashes are not hex is dropped
   expect(parseCommitLines('zz\x00zz\x00s\x00a\x00b\x00')).toEqual([])
   // trusted global drivers are listed too, so they can be switched off for status
-  expect(allFilterNames('system\tfilter.lfs.clean\nglobal\tfilter.lfs.process\nlocal\tfilter.x.y.smudge')).toEqual(['lfs', 'x.y'])
+  // only the person's own drivers are switched off; local ones make status skip instead
+  expect(allFilterNames('system\tfilter.lfs.clean\nglobal\tfilter.lfs.process\nlocal\tfilter.x.y.smudge')).toEqual(['lfs'])
+  // a name that could split into another key and value inside -c fails closed
+  expect(allFilterNames('global\tfilter.lfs.process=calc .required')).toBeNull()
+  expect(filterOffArgs(['ok', 'bad=x', 'sp ace'])).toEqual(['-c', 'filter.ok.process=', '-c', 'filter.ok.clean=', '-c', 'filter.ok.smudge=', '-c', 'filter.ok.required=false'])
+  // config lines this reader cannot parse fail closed
+  expect(configValues('[include "a\\\\b"]\n\tpath = x\n').some(v => v.isOdd)).toBe(true)
+  expect(configValues('[core]\n\tbare\n').some(v => v.isOdd)).toBe(false)
+  expect(configValues('[core]\n\t"weird line\n').some(v => v.isOdd)).toBe(true)
   expect(filterOffArgs(['lfs'])).toEqual(['-c', 'filter.lfs.process=', '-c', 'filter.lfs.clean=', '-c', 'filter.lfs.smudge=', '-c', 'filter.lfs.required=false'])
   expect(clean('a\u00adb\u3164c\u2028d\u{e0041}e\ufe0f')).toBe('abcde')
   expect(shorten('😀'.repeat(10), 4)).toBe('😀😀😀…')

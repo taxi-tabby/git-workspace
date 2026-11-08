@@ -111,14 +111,15 @@ export const parseStatus = (stdout: string, repo: RepoInfo): RepoInfo => {
  * Global and system ones are the person's own and trusted.
  */
 export const untrustedFilters = (stdout: string): string[] => {
-  const names = new Set<string>()
+  // any filter.* key the repository sets for itself, whatever its last part: a crafted key
+  // such as "filter.lfs.process=cmd .required" must never pass as harmless
+  const keys: string[] = []
   for (const line of stdout.split(/\r?\n/)) {
     const [scope, key] = line.split('\t')
     if (!key || scope === 'global' || scope === 'system') continue
-    const m = /^filter\.(.+)\.(clean|smudge|process)$/i.exec(key)
-    if (m?.[1]) names.add(m[1])
+    if (/^filter\./i.test(key)) keys.push(key)
   }
-  return [...names]
+  return keys
 }
 
 /** `config --show-scope` (git 2.26) is the newest option the mod uses. */
@@ -335,9 +336,19 @@ export const configValues = (text: string): { value: string; loose: string; isIn
     const header = /^\[([^\]]*)\]\s*(.*)$/.exec(line)
     const body = header ? header[2]! : line
     if (header) section = header[1]!.trim().split(/\s+/)[0]!.toLowerCase()
+    // a section header git might read differently (quoted subsection with escapes or
+    // brackets, text after the closing bracket that is not a setting) fails closed
+    if (header && (/\\/.test(header[1]!) || /"[^"]*\][^"]*"/.test(line))) {
+      out.push({ value: '', loose: '', isIncludePath: true, isOdd: true })
+      continue
+    }
     if (!body) continue
     const kv = /^([A-Za-z][\w-]*)\s*=\s*(.*)$/.exec(body)
-    if (!kv) continue
+    if (!kv) {
+      // a bare boolean key is fine; any other line this reader cannot parse fails closed
+      if (!/^[A-Za-z][\w-]*\s*([#;].*)?$/.test(body)) out.push({ value: '', loose: '', isIncludePath: true, isOdd: true })
+      continue
+    }
     const key = kv[1]!.toLowerCase()
     const written = kv[2]!
     const value = written.replace(/\s[#;].*$/, '').trim().replace(/^"(.*)"$/, '$1')
@@ -353,20 +364,28 @@ export const configValues = (text: string): { value: string; loose: string; isIn
   return out
 }
 
-/** Every filter driver named in `config --show-scope --name-only --get-regexp ^filter\\.` output, any scope. */
-export const allFilterNames = (stdout: string): string[] => {
+/**
+ * The filter drivers the person's own (global or system) config defines, to switch off for a
+ * status call; null when any of them has a name that is not plain (letters, digits, `.`, `_`,
+ * `-`), since such a name could split into a different key and value inside `-c`.
+ */
+export const allFilterNames = (stdout: string): string[] | null => {
   const names = new Set<string>()
   for (const line of stdout.split(/\r?\n/)) {
-    const key = line.split('\t')[1]
-    const m = key ? /^filter\.(.+)\.[^.]+$/i.exec(key) : null
-    if (m?.[1]) names.add(m[1])
+    const [scope, key] = line.split('\t')
+    if (!key || (scope !== 'global' && scope !== 'system')) continue
+    const m = /^filter\.(.+)\.(clean|smudge|process|required)$/i.exec(key)
+    if (!m?.[1] || !SAFE_FILTER_NAME.test(m[1])) return null
+    names.add(m[1])
   }
   return [...names]
 }
 
+const SAFE_FILTER_NAME = /^[A-Za-z0-9_.-]{1,64}$/
+
 /** `-c` options that switch each named filter driver off for one git call. */
 export const filterOffArgs = (names: readonly string[]): string[] =>
-  names.flatMap(name => [
+  names.filter(name => SAFE_FILTER_NAME.test(name)).flatMap(name => [
     '-c', `filter.${name}.process=`,
     '-c', `filter.${name}.clean=`,
     '-c', `filter.${name}.smudge=`,

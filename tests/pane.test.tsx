@@ -344,3 +344,18 @@ test('an oversized config, a link inside .git, or an odd include path fails clos
   expect(ran.some(args => args.includes('/ws/ok'))).toBe(true)
   await ui.unmount()
 })
+
+test('a crafted local filter key makes status skip; it never reaches a -c option', async ($, on) => {
+  const ran: string[] = []
+  fakeHost(on, '2.52.0', {
+    ran,
+    filters: 'global\tfilter.lfs.process\nlocal\tfilter.lfs.process=calc .required\n',
+  })
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(ran.some(args => args.includes(' status '))).toBe(false)
+  expect(ran.some(args => args.includes('calc'))).toBe(false)
+  expect(await ui.find({ type: 'Text', text: /filter driver/ })).toBeTruthy()
+  await ui.unmount()
+})

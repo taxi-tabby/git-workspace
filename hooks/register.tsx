@@ -183,9 +183,12 @@ async function inspectRepo($: Engine, path: string): Promise<RepoInfo> {
     // the status call: a repository's .gitattributes alone could otherwise start them.
     const filters = await gitFilterConfig($, path)
     // exit 1 with no output is git's "no such key"; any other failure fails closed
-    const isUnchecked = filters.exitCode !== 0 && !(filters.exitCode === 1 && filters.stdout.trim() === '')
+    const isUnchecked =
+      (filters.exitCode !== 0 && !(filters.exitCode === 1 && filters.stdout.trim() === '')) ||
+      (filters.exitCode === 0 && allFilterNames(filters.stdout) === null)
     const risky = filters.exitCode === 0 ? untrustedFilters(filters.stdout) : []
-    const filterOff = filters.exitCode === 0 ? filterOffArgs(allFilterNames(filters.stdout)) : []
+    const trustedNames = filters.exitCode === 0 ? allFilterNames(filters.stdout) : []
+    const filterOff = filterOffArgs(trustedNames ?? [])
 
     if (isUnchecked || risky.length > 0) {
       const head = await gitHead($, path)
@@ -343,7 +346,7 @@ async function loadDetail($: Engine, path: string) {
   try {
     const filters = await gitFilterConfig($, path)
     const canReadStatus = filters.exitCode === 0
-      ? untrustedFilters(filters.stdout).length === 0
+      ? untrustedFilters(filters.stdout).length === 0 && allFilterNames(filters.stdout) !== null
       : filters.exitCode === 1 && filters.stdout.trim() === ''
     const [recent, incoming, outgoing, upstream, counts, changed, stash, fetched] = await Promise.all([
       gitRecent($, path),
@@ -351,7 +354,7 @@ async function loadDetail($: Engine, path: string) {
       gitOutgoing($, path),
       gitUpstreamName($, path),
       gitAheadBehind($, path),
-      canReadStatus ? gitChangedFiles($, path, filterOffArgs(allFilterNames(filters.stdout))) : Promise.resolve(null),
+      canReadStatus ? gitChangedFiles($, path, filterOffArgs(allFilterNames(filters.stdout) ?? [])) : Promise.resolve(null),
       gitStashCount($, path),
       lastFetchAge($, path),
     ])
@@ -766,8 +769,10 @@ async function copyPath($: Engine, path: string, surface: UiPressArgument['surfa
 
 /** Puts text on the clipboard of the surface that asked, and says so. */
 async function copyText($: Engine, text: string, surface: UiPressArgument['surface']) {
-  const result = await $.ui.copy({ text, surface })
-  if (result.isCopied) $.ui.toast(T.copied(shorten(clean(text), 48)))
+  const safe = clean(text)
+  if (!safe) return
+  const result = await $.ui.copy({ text: safe, surface })
+  if (result.isCopied) $.ui.toast(T.copied(shorten(safe, 48)))
 }
 
 /** A pressed row link: scan from that folder, or copy its path. */
