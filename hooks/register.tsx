@@ -462,6 +462,8 @@ export const register: Register = (on, options) => {
     // text sizes and weights only where the engine knows them; older engines refuse the
     // whole drawing over one unknown prop, so they get the plain text instead
     const rt = (props: Pick<TextProps, 'size' | 'weight' | 'tabular'>) => (richText ? props : {})
+    // spacing steps likewise: a step name where the engine knows them, whole cells elsewhere
+    const sp = (step: 'xs' | 'sm' | 'md', cells: number) => (richText ? step : cells)
 
     const ICON_W = Svg ? 3 : 2 // the icon's column, with a little air before the label
     // the fold chevron's column; a flat list has nothing to fold, so it keeps one cell of air
@@ -475,7 +477,7 @@ export const register: Register = (on, options) => {
     )
 
     const heading = (label: string, right?: string) => (
-      <Box flexDirection="row" justifyContent="space-between">
+      <Box flexDirection="row" justifyContent="space-between" marginBottom={sp('xs', 0)}>
         <Text {...rt({ size: 'caption', weight: 'semibold' })} dimColor wrap="truncate-end">
           {label}
         </Text>
@@ -540,17 +542,18 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    const commitLine = (r: RepoInfo, indent: number) =>
+    const hideOnHover = hasHover ? { hover: { color: 'transparent' } } : {}
+    const commitLine = (r: RepoInfo, indent: number, inRow = false) =>
       r.lastCommit || r.warning ? (
         <Box flexDirection="column" paddingLeft={indent}>
           {r.lastCommit ? (
-            <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-end">
+            <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-end" {...(inRow ? hideOnHover : {})}>
               {r.lastCommitAge ? `${r.lastCommitAge} · ` : ''}
               {r.lastCommit}
             </Text>
           ) : null}
           {r.warning ? (
-            <Text {...rt({ size: 'caption' })} color="warning" wrap="truncate-end">
+            <Text {...rt({ size: 'caption' })} color="warning" wrap="truncate-end" {...(inRow ? hideOnHover : {})}>
               {r.warning}
             </Text>
           ) : null}
@@ -584,6 +587,7 @@ export const register: Register = (on, options) => {
           key={`row:${node.path}`}
           flexDirection="column"
           paddingLeft={indentOf(node.depth)}
+          paddingY={sp('xs', 0)}
           marginTop={isGroupEdge ? 1 : 0}
           {...hoverRow}
         >
@@ -623,16 +627,15 @@ export const register: Register = (on, options) => {
             ) : null}
           </Box>
           {!isInlineSummary && node.repo ? summaryLine(node.repo, NAME_INDENT) : null}
-          {node.repo ? commitLine(node.repo, NAME_INDENT) : null}
+          {node.repo ? commitLine(node.repo, NAME_INDENT, true) : null}
           {hasHover ? (
-            // floats over the row's lower right on hover: takes no room, moves nothing,
-            // and leaves the name line's status visible
+            // floats in on hover: takes no room and moves nothing. On a repo row it covers
+            // the commit line, which turns transparent meanwhile, so nothing shows through.
             <Box
               flexDirection="row"
-              gap={1}
+              gap={sp('sm', 1)}
               position="absolute"
-              bottom={0}
-              right={0}
+              {...(node.repo ? { bottom: 0, left: indentOf(node.depth) + NAME_INDENT } : { top: 0, right: 0 })}
               display="none"
               hover={{ display: 'flex' }}
             >
@@ -695,7 +698,7 @@ export const register: Register = (on, options) => {
 
     // the settings group: an inset block on desktop, a framed one where there is no fill
     const groupProps = hasHover
-      ? { borderStyle: 'round', borderDimColor: true, backgroundColor: INSET_BG, paddingX: 1 }
+      ? { borderStyle: 'round', borderDimColor: true, backgroundColor: INSET_BG, paddingX: sp('md', 1), paddingY: sp('sm', 0) }
       : { borderStyle: 'round', borderDimColor: true, paddingX: 1 }
 
     const legendKinds = Svg ? (
@@ -716,7 +719,7 @@ export const register: Register = (on, options) => {
     )
 
     return (
-      <Box flexDirection="column" gap={1}>
+      <Box flexDirection="column" gap={sp('md', 1)}>
         {/* toolbar: the section name at left, the three controls at right */}
         <Box flexDirection="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1}>
           <Box flexGrow={1} flexShrink={1} minWidth={0}>
@@ -780,8 +783,8 @@ export const register: Register = (on, options) => {
 
         {/* settings, folded away behind ⋯ */}
         {isMenuOpen ? (
-          <Box flexDirection="column" gap={1} {...groupProps}>
-            <Box flexDirection="column">
+          <Box flexDirection="column" gap={sp('md', 1)} {...groupProps}>
+            <Box flexDirection="column" gap={sp('xs', 0)}>
               {heading(T.sectionScanFolder)}
               {Input ? (
                 <Box width="100%" flexDirection="column">
