@@ -45,6 +45,43 @@ export type ScanInfo = {
   gitProblem: '' | 'missing' | 'old'
 }
 
+/** One commit as a detail list shows it. */
+export type CommitLine = {
+  hash: string
+  /** the full 40-character hash, what the copy link puts on the clipboard */
+  full: string
+  subject: string
+  age: string
+  author: string
+}
+
+/** A changed file: its two-letter porcelain code ("M ", " M", "??", "UU") and path. */
+export type ChangedFile = {
+  code: string
+  path: string
+}
+
+/** What an opened repository row shows below itself. Read on demand, never fetched. */
+export type RepoDetail = {
+  path: string
+  isLoading: boolean
+  /** true once this row's details were read at least once (no flicker on refreshes) */
+  hasLoaded: boolean
+  /** when `git fetch` last updated this repository ('' when it never has) */
+  lastFetchAge: string
+  /** the upstream as git names it ("origin/main"); '' when the branch has none */
+  upstream: string
+  ahead: number
+  behind: number
+  incoming: CommitLine[]
+  outgoing: CommitLine[]
+  recent: CommitLine[]
+  files: ChangedFile[]
+  filesTotal: number
+  stashes: number
+  error: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'git-workspace': {
@@ -56,6 +93,9 @@ declare module 'claude-code' {
       root: string
       maxDepth: number
       isEditingRoot: boolean
+      /** the repository row opened to show its details; '' = none */
+      openRepo: string
+      detail: Shaped<RepoDetail | null>
     }
   }
 }

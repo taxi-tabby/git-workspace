@@ -53,10 +53,22 @@ const fakeHost = (on: On, gitVersion: string | null) => {
       return { value: { exitCode: 0, stdout: `git version ${gitVersion}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     if (gitVersion === null) throw new Error('spawn git ENOENT')
-    const stdout = args.includes(' status ') ? STATUS : args.includes(' log ') ? 'abc1234 init\x1f2 days ago' : ''
-    return {
-      value: { exitCode: args.includes(' config ') ? 1 : 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-    }
+    const answer = (stdout: string, exitCode = 0) => ({
+      value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    })
+    if (args.includes(' config ')) return answer('', 1)
+    if (args.includes(' status --porcelain=v1 ')) return answer(' M src/app.ts\0?? notes.md\0R  new.ts\0old.ts\0')
+    if (args.includes(' status ')) return answer(STATUS)
+    if (args.includes(' @{upstream}..HEAD ')) return answer('def5678\x1fdef5678000000000000000000000000000000000\x1fadd the feature\x1f1 hour ago\x1fme\x1e')
+    if (args.includes(' HEAD..@{upstream} ')) return answer('')
+    if (args.includes(' --abbrev-ref --symbolic-full-name @{upstream}')) return answer('origin/main\n')
+    if (args.includes(' rev-list --left-right --count ')) return answer('1\t0\n')
+    if (args.includes(' rev-parse --git-dir --git-common-dir')) return answer('.git\n.git\n')
+    if (args.includes(' log -8 ')) return answer('def5678\x1fdef5678000000000000000000000000000000000\x1fadd the feature\x1f1 hour ago\x1fme\x1eabc1234\x1fabc1234000000000000000000000000000000000\x1finit\x1f2 days ago\x1fme\x1e')
+    if (args.includes(' log ')) return answer('abc1234 init\x1f2 days ago')
+    if (args.includes(' rev-list ')) return answer('', 128)
+    if (args.includes(' rev-parse --git-common-dir')) return answer('.git\n')
+    return answer('')
   })
 }
 
@@ -166,5 +178,47 @@ test('the terminal draws glyphs where the desktop draws SVG icons', async ($, on
   expect(await ui.find({ type: 'Text', text: '⎇' })).toBeTruthy()
   // one branch glyph per status, never two
   expect(await ui.find({ type: 'Text', text: /⎇ ⎇/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('opening a repository row shows what to push, its changes and recent commits', async ($, on) => {
+  fakeHost(on, '2.52.0')
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ type: 'Text', text: /to push/ })).toBeUndefined()
+    await ui.press({ key: 'open:/ws/app/lib' })
+    expect(await ui.find({ type: 'Text', text: /↑ 1 to push/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /TO PUSH/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /CHANGES/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /src\/app\.ts/ })).toBeTruthy()
+    // a rename's original path is not listed as a file of its own
+    expect(await ui.find({ type: 'Text', text: /old\.ts/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /RECENT COMMITS/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Text', text: /add the feature/ })).toBeTruthy()
+    // pressing it again closes it
+    await ui.press({ key: 'open:/ws/app/lib' })
+    expect(await ui.find({ type: 'Text', text: /RECENT COMMITS/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('the copy link on a commit copies its full hash', async ($, on) => {
+  fakeHost(on, '2.52.0')
+  const copied: string[] = []
+  on('ui.copy', (_, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'open:/ws/app/lib' })
+  expect(await ui.find({ type: 'Markdown', key: 'copy-hash:recent:def5678' })).toBeTruthy()
+  expect(await ui.find({ type: 'Markdown', key: 'copy-file:src/app.ts' })).toBeTruthy()
+  await ui.press({ key: 'copy-hash:recent:def5678', link: { href: 'file:///ws#copy' } })
+  expect(copied).toEqual(['def5678000000000000000000000000000000000'])
   await ui.unmount()
 })

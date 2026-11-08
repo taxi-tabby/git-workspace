@@ -1,5 +1,5 @@
 // Pure helpers: no `$`, so the tests can call them directly.
-import type { GitKind, RepoInfo, TreeNode } from '../types'
+import type { ChangedFile, CommitLine, GitKind, RepoInfo, TreeNode } from '../types'
 
 /** A directory found by the scan: a repository, or a folder holding one somewhere below. */
 export type RawNode = {
@@ -30,7 +30,9 @@ export const baseName = (path: string): string => {
 }
 
 /** Strip C0/C1 control characters (terminal escape sequences) from repo-derived text. */
-export const clean = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+export const clean = (text: string): string =>
+  // control characters, and bidi / zero-width marks that could reorder or hide what is shown
+  text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '')
 
 /** What a `.git` *file* points at: a linked worktree, a submodule, or a plain gitdir. */
 export const gitKindOfFile = (content: string): GitKind => {
@@ -234,4 +236,54 @@ export const subtreeCounts = (rows: readonly TreeNode[]): Map<string, { repos: n
     }
   }
   return counts
+}
+
+/** Separators for `git log --format`: %x1f between fields, %x1e after each commit. */
+export const LOG_FORMAT = '%h%x1f%H%x1f%s%x1f%cr%x1f%an%x1e'
+
+/** Reads `git log --format=LOG_FORMAT` into commits, control characters stripped. */
+export const parseCommitLines = (stdout: string): CommitLine[] =>
+  stdout
+    .split('\x1e')
+    .map(record => record.replace(/^\s+/, ''))
+    .filter(record => record.includes('\x1f'))
+    .map(record => {
+      const [hash = '', full = '', subject = '', age = '', author = ''] = record.split('\x1f')
+      return { hash: clean(hash), full: clean(full), subject: clean(subject), age: clean(age), author: clean(author) }
+    })
+
+/**
+ * Reads `git status --porcelain=v1 -z` into files. Each entry is "XY path"; a
+ * rename or copy is followed by its original path, which is skipped.
+ */
+export const parseChangedFiles = (stdout: string): ChangedFile[] => {
+  const files: ChangedFile[] = []
+  const parts = stdout.split('\0')
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i]!
+    if (entry.length < 4) continue
+    const code = entry.slice(0, 2)
+    files.push({ code: clean(code), path: clean(entry.slice(3)) })
+    // a rename or copy, in the index or the worktree, is followed by its original path
+    if ('RC'.includes(code[0]!) || 'RC'.includes(code[1]!)) i++
+  }
+  return files
+}
+
+/** Whole minutes, hours or days between two times, for "fetched 3 h ago". */
+export const elapsed = (fromMs: number, nowMs: number): { value: number; unit: 'm' | 'h' | 'd' } => {
+  const minutes = Math.max(0, Math.floor((nowMs - fromMs) / 60_000))
+  if (minutes < 60) return { value: minutes, unit: 'm' }
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return { value: hours, unit: 'h' }
+  return { value: Math.floor(hours / 24), unit: 'd' }
+}
+
+/** A UNC, device or other double-slash path, which Windows would reach over the network. */
+export const isNetworkPath = (path: string): boolean => /^[\\/]{2}/.test(path.trim())
+
+/** Reads `rev-list --left-right --count HEAD...@{upstream}` ("<ahead>\t<behind>"). */
+export const parseAheadBehind = (stdout: string): { ahead: number; behind: number } | null => {
+  const m = /^(\d+)\s+(\d+)/.exec(stdout.trim())
+  return m ? { ahead: Number(m[1]), behind: Number(m[2]) } : null
 }

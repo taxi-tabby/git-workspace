@@ -25,13 +25,21 @@ commit with its age.
 
 - `/git-workspace` opens the pane. `/git-workspace <folder>` scans another folder.
 - The pane scans the session's folder by default, down to 4 levels (adjustable from 1 to 10).
-- Header buttons: **⟳** refresh (`r`), **Changed** show only repositories that need attention (`f`),
-  **⋯** menu (`p`).
-- The menu holds the scan-root field, **Session folder**, **Parent folder**,
-  recent roots, fold or unfold all, depth − / +, and a legend.
-- Hover a row to show **⤴ Scan here** and **⧉ Copy path**. In the terminal
-  these appear inline while the menu is open.
-- The pane rescans every 60 seconds and shortly after Claude runs a Bash command.
+- Header buttons: **Refresh** (`r`), **Changed** shows only repositories that need attention
+  (`f`), and **Settings** (`p`).
+- **Settings** holds the scan-root field, **Session folder**, **Parent folder**, recent roots,
+  collapse or expand all, depth − / +, and a legend.
+- Press **▸** beside a repository to open its details:
+  - whether it is up to date, has commits **to pull** or **to push**, has diverged, or has no
+    upstream, and when it was last fetched
+  - the commits to pull and to push
+  - its changed files, its stash count, and the last 8 commits on the checked-out branch
+- "To pull" compares against the remote-tracking branch as your last `git fetch` left it. The pane
+  never fetches, so run `git fetch` (or let your editor do it) for fresh numbers.
+- Hover a row for **⤴** (scan from that folder) and **⧉** (copy its path). In the terminal these
+  appear as buttons while Settings is open.
+- The pane rescans every 60 seconds and shortly after Claude runs a Bash command. An opened row's
+  details refresh with it.
 
 ## Language
 
@@ -75,12 +83,27 @@ safety options shown under it.
 | Branch, upstream, ahead/behind, changed files | `git -C <repo> status --porcelain=v2 --branch --untracked-files=normal --ignore-submodules=all` |
 | Branch only, when status is skipped | `git -C <repo> symbolic-ref --quiet --short HEAD` |
 | Last commit | `git -C <repo> log -1 --no-show-signature --format=%h %s%x1f%cr` |
+| Details: last 8 commits | `git -C <repo> log -8 --no-show-signature --format=… --` |
+| Details: commits to pull | `git -C <repo> log -20 --no-show-signature --format=… HEAD..@{upstream} --` |
+| Details: commits to push | `git -C <repo> log -20 --no-show-signature --format=… @{upstream}..HEAD --` |
+| Details: upstream name | `git -C <repo> rev-parse --abbrev-ref --symbolic-full-name @{upstream}` |
+| Details: how many to push / pull | `git -C <repo> rev-list --left-right --count HEAD...@{upstream} --` |
+| Details: changed files | `git -C <repo> status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=all` |
+| Details: stash count | `git -C <repo> rev-list --walk-reflogs --count refs/stash --` |
+| Details: where FETCH_HEAD is, for the last fetch time | `git -C <repo> rev-parse --git-dir --git-common-dir` |
+
+The details commands run only for the row you open. The changed-files command is skipped for a
+repository that sets its own filter drivers, the same rule as `git status` above.
 
 Scanned repositories are treated as untrusted. Every call passes
 `-c core.fsmonitor=false -c core.hooksPath= -c core.pager=cat -c diff.external=
 -c log.showSignature=false -c gpg.program=false -c gpg.ssh.program=false
--c gpg.x509.program=false --no-pager --no-optional-locks`, so repository config cannot make git
-start another program. It also sets `GIT_TERMINAL_PROMPT=0`, so git never prompts. A repository
+-c gpg.x509.program=false -c protocol.allow=never -c core.sshCommand= -c credential.helper=
+-c core.askPass= --no-pager --no-optional-locks`. With these, repository config cannot make git
+start another program, and git can use no transport at all. It also sets `GIT_NO_LAZY_FETCH=1`,
+so even a partial clone can't fetch a missing object, and `GIT_TERMINAL_PROMPT=0`, so git never
+prompts. A repository whose `.git` file points at a network path (`\\host\share`) is listed
+but never run and never read. A repository
 that defines its own filter drivers, or whose config cannot be read, gets its branch shown
 without `git status`. Control characters are stripped from everything shown.
 

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, TextProps, UiPressArgument } from 'claude-code'
 
-import type { RepoInfo, ScanInfo, TreeNode } from '../types'
+import type { RepoDetail, RepoInfo, ScanInfo, TreeNode } from '../types'
 import {
   baseName,
   clean,
@@ -18,6 +18,11 @@ import {
   supportsRichText,
   actionHref,
   actionOf,
+  elapsed,
+  isNetworkPath,
+  parseAheadBehind,
+  parseChangedFiles,
+  parseCommitLines,
   subtreeCounts,
   untrustedFilters,
   visibleRows,
@@ -60,6 +65,8 @@ const collapsed = atom({ plugin: 'git-workspace', key: 'collapsed' } as const, [
 const rootChoice = atom({ plugin: 'git-workspace', key: 'root' } as const, '')
 const maxDepth = atom({ plugin: 'git-workspace', key: 'maxDepth' } as const, DEFAULT_DEPTH)
 const isEditingRoot = atom({ plugin: 'git-workspace', key: 'isEditingRoot' } as const, false)
+const openRepo = atom({ plugin: 'git-workspace', key: 'openRepo' } as const, '')
+const detail = atom({ plugin: 'git-workspace', key: 'detail' } as const, null, { shape: 'detail-1' })
 
 type Engine = EngineInterface
 
@@ -70,7 +77,33 @@ type Engine = EngineInterface
 // each config setting that could make git start another program (fsmonitor,
 // hooks, pager, external diff, signature programs) and never prompts.
 
-const GIT_OPTIONS = { timeoutMs: 15_000, env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' } }
+/**
+ * Put before every git subcommand. Scanned repositories are untrusted, so these switch off
+ * each setting their config could use to start a program (fsmonitor, hooks, pager, external
+ * diff, signature programs, ssh command, credential helper, askpass) and allow no transport
+ * at all, so not even a partial clone's lazy fetch can reach a remote.
+ */
+const SAFE_GIT_ARGS = [
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.hooksPath=',
+  '-c', 'core.pager=cat',
+  '-c', 'diff.external=',
+  '-c', 'log.showSignature=false',
+  '-c', 'gpg.program=false',
+  '-c', 'gpg.ssh.program=false',
+  '-c', 'gpg.x509.program=false',
+  '-c', 'protocol.allow=never',
+  '-c', 'core.sshCommand=',
+  '-c', 'credential.helper=',
+  '-c', 'core.askPass=',
+  '--no-pager',
+  '--no-optional-locks',
+] as const
+
+const GIT_OPTIONS = {
+  timeoutMs: 15_000,
+  env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1', GIT_ASKPASS: '', SSH_ASKPASS: '' },
+}
 
 /** Whether git can start at all, and its version. */
 async function gitVersionCommand($: Engine) {
@@ -92,7 +125,7 @@ async function checkGit($: Engine): Promise<{ version: string; problem: ScanInfo
 /** Lists filter drivers from every config scope (reading config runs nothing). */
 async function gitFilterConfig($: Engine, cwd: string) {
   return $.process.run(
-    ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'log.showSignature=false', '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '--no-pager', '--no-optional-locks', '-C', cwd, 'config', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'],
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'config', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'],
     GIT_OPTIONS,
   )
 }
@@ -100,7 +133,7 @@ async function gitFilterConfig($: Engine, cwd: string) {
 /** Branch, upstream, ahead/behind and changed files. */
 async function gitStatus($: Engine, cwd: string) {
   return $.process.run(
-    ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'log.showSignature=false', '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '--no-pager', '--no-optional-locks', '-C', cwd, 'status', '--porcelain=v2', '--branch', '--untracked-files=normal', '--ignore-submodules=all'],
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'status', '--porcelain=v2', '--branch', '--untracked-files=normal', '--ignore-submodules=all'],
     GIT_OPTIONS,
   )
 }
@@ -108,7 +141,7 @@ async function gitStatus($: Engine, cwd: string) {
 /** The current branch name, for a repository whose status is not read. */
 async function gitHead($: Engine, cwd: string) {
   return $.process.run(
-    ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'log.showSignature=false', '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '--no-pager', '--no-optional-locks', '-C', cwd, 'symbolic-ref', '--quiet', '--short', 'HEAD'],
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'symbolic-ref', '--quiet', '--short', 'HEAD'],
     GIT_OPTIONS,
   )
 }
@@ -116,7 +149,7 @@ async function gitHead($: Engine, cwd: string) {
 /** Short hash, subject and age of the last commit. */
 async function gitLastCommit($: Engine, cwd: string) {
   return $.process.run(
-    ['git', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', '-c', 'core.pager=cat', '-c', 'diff.external=', '-c', 'log.showSignature=false', '-c', 'gpg.program=false', '-c', 'gpg.ssh.program=false', '-c', 'gpg.x509.program=false', '--no-pager', '--no-optional-locks', '-C', cwd, 'log', '-1', '--no-show-signature', '--format=%h %s%x1f%cr'],
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-1', '--no-show-signature', '--format=%h %s%x1f%cr'],
     GIT_OPTIONS,
   )
 }
@@ -190,9 +223,163 @@ async function inspectAll($: Engine, paths: string[]): Promise<RepoInfo[]> {
   return out
 }
 
+// ---------------------------------------------------------------- repository details
+//
+// Read only when a row is opened, with the same safety options; nothing here contacts a
+// remote: "to pull" is measured against the remote-tracking branch as the last `git fetch`
+// left it, and the pane says when that was.
+
+/** The last 8 commits of the checked-out branch. */
+async function gitRecent($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-8', '--no-show-signature', '--format=%h%x1f%H%x1f%s%x1f%cr%x1f%an%x1e', '--'],
+    GIT_OPTIONS,
+  )
+}
+
+/** Up to 20 commits on the upstream that this branch doesn't have yet (what a pull brings). */
+async function gitIncoming($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-20', '--no-show-signature', '--format=%h%x1f%H%x1f%s%x1f%cr%x1f%an%x1e', 'HEAD..@{upstream}', '--'],
+    GIT_OPTIONS,
+  )
+}
+
+/** Up to 20 commits on this branch that the upstream doesn't have yet (what a push sends). */
+async function gitOutgoing($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-20', '--no-show-signature', '--format=%h%x1f%H%x1f%s%x1f%cr%x1f%an%x1e', '@{upstream}..HEAD', '--'],
+    GIT_OPTIONS,
+  )
+}
+
+/** The upstream's name ("origin/main"); fails when the branch has none. */
+async function gitUpstreamName($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'],
+    GIT_OPTIONS,
+  )
+}
+
+/** "<ahead>\t<behind>": commits only on HEAD, and only on the upstream. */
+async function gitAheadBehind($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'rev-list', '--left-right', '--count', 'HEAD...@{upstream}', '--'],
+    GIT_OPTIONS,
+  )
+}
+
+/** The changed files, NUL-separated so any file name reads back whole. */
+async function gitChangedFiles($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=all'],
+    GIT_OPTIONS,
+  )
+}
+
+/** How many stashes there are (exits non-zero when there are none). */
+async function gitStashCount($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'rev-list', '--walk-reflogs', '--count', 'refs/stash', '--'],
+    GIT_OPTIONS,
+  )
+}
+
+/** The repository's own git folder and its shared one, one per line (equal outside worktrees). */
+async function gitDirs($: Engine, cwd: string) {
+  return $.process.run(
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'rev-parse', '--git-dir', '--git-common-dir'],
+    GIT_OPTIONS,
+  )
+}
+
+/**
+ * When `git fetch` last wrote FETCH_HEAD, as "3 h ago"; '' when it never has. FETCH_HEAD
+ * lives in a worktree's own folder when fetched there, else in the shared one, so the newer
+ * of the two counts. A folder on a network path is never looked at.
+ */
+async function lastFetchAge($: Engine, cwd: string): Promise<string> {
+  try {
+    const out = await gitDirs($, cwd)
+    if (out.exitCode !== 0) return ''
+    let newest = 0
+    for (const line of out.stdout.split(/\r?\n/)) {
+      const dir = line.trim()
+      if (!dir || isNetworkPath(dir)) continue
+      const isAbsolute = /^([A-Za-z]:[\\/]|[\\/])/.test(dir)
+      const stat = await $.fs.stat(joinPath(isAbsolute ? dir : joinPath(cwd, dir), 'FETCH_HEAD')).catch(() => undefined)
+      if (stat && stat.mtimeMs > newest) newest = stat.mtimeMs
+    }
+    return newest ? T.ago(elapsed(newest, Date.now())) : ''
+  } catch {
+    return ''
+  }
+}
+
+const emptyDetail = (path: string): RepoDetail => ({
+  path, isLoading: true, hasLoaded: false, lastFetchAge: '', upstream: '', ahead: 0, behind: 0,
+  incoming: [], outgoing: [], recent: [], files: [], filesTotal: 0, stashes: 0, error: '',
+})
+
+/**
+ * Reads the opened repository's details. Every write checks that this row is still the
+ * open one, so a slower read for another row never lands on it.
+ */
+async function loadDetail($: Engine, path: string) {
+  if ((await read($, openRepo)) !== path) return
+  await update($, detail, d => (d && d.path === path ? { ...d, isLoading: true } : emptyDetail(path)))
+  const next = emptyDetail(path)
+  try {
+    const filters = await gitFilterConfig($, path)
+    const canReadStatus = filters.exitCode === 0
+      ? untrustedFilters(filters.stdout).length === 0
+      : filters.exitCode === 1 && filters.stdout.trim() === ''
+    const [recent, incoming, outgoing, upstream, counts, changed, stash, fetched] = await Promise.all([
+      gitRecent($, path),
+      gitIncoming($, path),
+      gitOutgoing($, path),
+      gitUpstreamName($, path),
+      gitAheadBehind($, path),
+      canReadStatus ? gitChangedFiles($, path) : Promise.resolve(null),
+      gitStashCount($, path),
+      lastFetchAge($, path),
+    ])
+    next.recent = recent.exitCode === 0 ? parseCommitLines(recent.stdout) : []
+    next.incoming = incoming.exitCode === 0 ? parseCommitLines(incoming.stdout) : []
+    next.outgoing = outgoing.exitCode === 0 ? parseCommitLines(outgoing.stdout) : []
+    next.upstream = upstream.exitCode === 0 ? clean(upstream.stdout.trim()) : ''
+    const ab = counts.exitCode === 0 ? parseAheadBehind(counts.stdout) : null
+    next.ahead = ab?.ahead ?? 0
+    next.behind = ab?.behind ?? 0
+    const files = changed && changed.exitCode === 0 ? parseChangedFiles(changed.stdout) : []
+    next.filesTotal = files.length
+    next.files = files.slice(0, 12)
+    next.stashes = stash.exitCode === 0 ? Number(stash.stdout.trim()) || 0 : 0
+    next.lastFetchAge = fetched
+  } catch (err) {
+    next.error = clean(err instanceof Error ? err.message : String(err))
+  }
+  next.isLoading = false
+  next.hasLoaded = true
+  if ((await read($, openRepo)) === path) await update($, detail, () => next)
+}
+
+/** Opens a repository row's details, or closes them when that row is already open. */
+async function toggleDetail($: Engine, path: string) {
+  const current = await read($, openRepo)
+  if (current === path) {
+    await update($, openRepo, () => '')
+    await update($, detail, () => null)
+    return
+  }
+  await update($, openRepo, () => path)
+  await update($, detail, () => emptyDetail(path))
+  await loadDetail($, path)
+}
+
 // ---------------------------------------------------------------- scan
 
-type Walk = { visited: number; isTruncated: boolean; active: number; waiting: (() => void)[] }
+type Walk = { visited: number; isTruncated: boolean; active: number; waiting: (() => void)[]; unsafe: Set<string> }
 
 async function acquireSlot(walk: Walk) {
   if (walk.active >= FS_CONCURRENCY) await new Promise<void>(resolve => walk.waiting.push(resolve))
@@ -236,7 +423,10 @@ async function visitDir($: Engine, walk: Walk, path: string, level: number, dept
   walk.visited++
   const entries = await listDir($, walk, path)
   const dotGit = entries.find(entry => entry.name === '.git')
-  const gitKind: RawNode['gitKind'] = dotGit?.kind === 'file' ? gitKindOfFile(await readGitFile($, path)) : 'repo'
+  const gitFile = dotGit?.kind === 'file' ? await readGitFile($, path) : ''
+  const gitKind: RawNode['gitKind'] = dotGit?.kind === 'file' ? gitKindOfFile(gitFile) : 'repo'
+  // a gitdir on a network share: running git there would reach out to that host
+  if (isNetworkPath(gitFile.replace(/^gitdir:\s*/i, '').trim())) walk.unsafe.add(path)
   const children: RawNode[] = []
   if (level < depth) {
     const dirs = entries
@@ -253,9 +443,9 @@ async function visitDir($: Engine, walk: Walk, path: string, level: number, dept
 }
 
 async function walkTree($: Engine, root: string, depth: number) {
-  const walk: Walk = { visited: 0, isTruncated: false, active: 0, waiting: [] }
+  const walk: Walk = { visited: 0, isTruncated: false, active: 0, waiting: [], unsafe: new Set() }
   const tree = (await visitDir($, walk, root, 0, depth)) ?? { path: root, name: root, isRepo: false, gitKind: 'repo', children: [] }
-  return { tree, visited: walk.visited, isTruncated: walk.isTruncated }
+  return { tree, visited: walk.visited, isTruncated: walk.isTruncated, unsafe: walk.unsafe }
 }
 
 function repoPaths(node: RawNode, into: string[] = []): string[] {
@@ -286,10 +476,13 @@ async function scanOnce($: Engine) {
   try {
     if (!(await $.fs.exists(root))) throw new Error(T.folderMissing(root))
     const git = await checkGit($)
-    const { tree, visited, isTruncated } = await walkTree($, root, depth)
+    const { tree, visited, isTruncated, unsafe } = await walkTree($, root, depth)
     const paths = repoPaths(tree)
     // without git the tree still shows where the repositories are, with no status
-    const infos = git.problem === 'missing' ? [] : await inspectAll($, paths)
+    const safePaths = paths.filter(p => !unsafe.has(p))
+    const safeInfos = git.problem === 'missing' ? [] : await inspectAll($, safePaths)
+    const bySafe = new Map(safePaths.map((p, i) => [p, safeInfos[i]!]))
+    const infos = git.problem === 'missing' ? [] : paths.map(p => bySafe.get(p) ?? { ...emptyRepo(), error: T.networkGitdir })
     const byPath = new Map(infos.map((info, i) => [paths[i]!, info]))
     const rows = flatten(tree, byPath)
     await update($, nodes, () => rows)
@@ -304,6 +497,13 @@ async function scanOnce($: Engine) {
       visited,
       isTruncated,
     }))
+    // keep an opened row's details current, or close them if the row is gone
+    const opened = await read($, openRepo)
+    if (opened && safePaths.includes(opened)) await loadDetail($, opened)
+    else if (opened) {
+      await update($, openRepo, () => '')
+      await update($, detail, () => null)
+    }
   } catch (err) {
     const message = clean(err instanceof Error ? err.message : String(err))
     await update($, nodes, () => [])
@@ -353,6 +553,8 @@ async function setRoot($: Engine, value: string) {
   await update($, rootChoice, () => root)
   await update($, collapsed, () => [])
   await update($, isEditingRoot, () => false)
+  await update($, openRepo, () => '')
+  await update($, detail, () => null)
   if (root) await rememberRoot($, root)
   await rescan($)
 }
@@ -370,10 +572,16 @@ async function copyPath($: Engine, path: string, surface: UiPressArgument['surfa
   await $.ui.copy({ text: path, surface })
 }
 
+/** Puts text on the clipboard of the surface that asked, and says so. */
+async function copyText($: Engine, text: string, surface: UiPressArgument['surface']) {
+  const result = await $.ui.copy({ text, surface })
+  if (result.isCopied) $.ui.toast(T.copied(text.length > 48 ? `${text.slice(0, 47)}…` : text))
+}
+
 /** A pressed row link: scan from that folder, or copy its path. */
 async function rowLinkAction($: Engine, path: string, href: string, surface: UiPressArgument['surface']) {
   const action = actionOf(href)
-  if (action === 'copy') await copyPath($, path, surface)
+  if (action === 'copy') await copyText($, path, surface)
   else if (action === 'scan') await setRoot($, path)
 }
 
@@ -445,6 +653,9 @@ export const register: Register = (on, options) => {
     const folded = new Set(await read($, collapsed))
     const depth = await read($, maxDepth)
     const isMenuOpen = await read($, isEditingRoot)
+    const opened = await read($, openRepo)
+    const readDetail: RepoDetail | null = opened ? await read($, detail) : null
+    const openDetail = readDetail && readDetail.path === opened ? readDetail : null
     const recent = isMenuOpen ? (await recentRoots($)).filter(p => !samePath(p, info.root)) : []
 
     const counts = subtreeCounts(rows)
@@ -470,13 +681,14 @@ export const register: Register = (on, options) => {
     const hoverRow = hasHover ? { hover: { backgroundColor: HOVER_BG } } : {}
     // text sizes and weights only where the engine knows them; older engines refuse the
     // whole drawing over one unknown prop, so they get the plain text instead
-    const rt = (props: Pick<TextProps, 'size' | 'weight' | 'tabular'>) => (richText ? props : {})
+    const rt = (props: Pick<TextProps, 'size' | 'weight' | 'tabular' | 'mono'>) => (richText ? props : {})
     // spacing steps likewise: a step name where the engine knows them, whole cells elsewhere
     const sp = (step: 'xs' | 'sm' | 'md', cells: number) => (richText ? step : cells)
 
     const ICON_W = Svg ? 3 : 2 // the icon's column, with a little air before the label
     // the fold chevron's column; a flat list has nothing to fold, so it keeps one cell of air
-    const SLOT = rows.some(row => row.hasChildren) ? 3 : 1
+    // every repository row has a details toggle, so the column is there whenever rows are
+    const SLOT = rows.length > 0 ? 3 : 1
     const NAME_INDENT = SLOT + ICON_W // secondary lines line up with the name
 
     const icon = (name: IconName, color: 'subtle' | 'claude' | 'suggestion' | 'warning' = 'subtle') => (
@@ -594,11 +806,148 @@ export const register: Register = (on, options) => {
       ) : null,
     ]
 
+    // ---- the details of an opened repository row
+    // a hover-only ⧉ in a slot that always keeps its width: copies `text`, moves nothing
+    const copySlot = (key: string, text: string) =>
+      hasHover && Markdown ? (
+        <Box flexShrink={0} width={3} flexDirection="row" justifyContent="flex-end">
+          <Box display="none" hover={{ display: 'flex' }}>
+            <Markdown key={key} text={`[⧉](${actionHref(info.root || '/', 'copy')})`} onLinkPress={(_, press) => copyText($, text, press.surface)} />
+          </Box>
+        </Box>
+      ) : null
+
+    const commitRow = (c: { hash: string; full: string; subject: string; age: string }, keyPrefix: string) => (
+      <Box key={`${keyPrefix}:${c.hash}`} flexDirection="row" {...hoverRow}>
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          <Text {...rt({ size: 'caption' })} wrap="truncate-end">
+            <Text color="subtle" {...rt({ mono: true })}>
+              {c.hash}
+            </Text>{' '}
+            {c.subject}
+          </Text>
+        </Box>
+        <Box flexShrink={0} marginLeft={1}>
+          <Text {...rt({ size: 'caption' })} dimColor>
+            {c.age}
+          </Text>
+        </Box>
+        {copySlot(`copy-hash:${keyPrefix}:${c.hash}`, c.full || c.hash)}
+      </Box>
+    )
+
+    const fileColor = (code: string): 'success' | 'warning' | 'error' | 'subtle' =>
+      code === '??' ? 'subtle' : code.includes('U') || code === 'AA' || code === 'DD' ? 'error' : code[0] !== ' ' ? 'success' : 'warning'
+
+    const syncLine = (r: RepoInfo, d: RepoDetail) => {
+      const parts = r.isDetached ? (
+        <Text color="warning">{T.detachedHead}</Text>
+      ) : d.recent.length === 0 ? (
+        <Text color="subtle">{T.noCommitsYet}</Text>
+      ) : !d.upstream ? (
+        <Text color="subtle">{T.noUpstream}</Text>
+      ) : d.ahead && d.behind ? (
+        <Text>
+          <Text color="warning">{T.diverged}</Text>
+          <Text color="warning"> · {T.toPull(d.behind)}</Text>
+          <Text color="success"> · {T.toPush(d.ahead)}</Text>
+        </Text>
+      ) : d.behind ? (
+        <Text color="warning">{T.toPull(d.behind)}</Text>
+      ) : d.ahead ? (
+        <Text color="success">{T.toPush(d.ahead)}</Text>
+      ) : (
+        <Text color="success">✓ {T.upToDate(d.upstream)}</Text>
+      )
+      return (
+        <Box flexDirection="column">
+          <Text {...rt({ size: 'footnote', weight: 'medium' })} wrap="truncate-end">
+            {parts}
+          </Text>
+          {d.upstream ? (
+            <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-end">
+              {d.lastFetchAge ? T.fetchedAgo(d.lastFetchAge) : T.neverFetched}
+              {d.stashes > 0 ? ` · ${T.stashes(d.stashes)}` : ''}
+            </Text>
+          ) : d.stashes > 0 ? (
+            <Text {...rt({ size: 'caption' })} dimColor>
+              {T.stashes(d.stashes)}
+            </Text>
+          ) : null}
+        </Box>
+      )
+    }
+
+    const countLabel = (total: number) => String(total)
+
+    const detailPanel = (r: RepoInfo, d: RepoDetail | null, indent: number) => (
+      <Box flexDirection="column" marginLeft={indent} marginTop={sp('xs', 0)} gap={sp('sm', 1)} {...groupProps}>
+        {!d || !d.hasLoaded ? (
+          <Text {...rt({ size: 'caption' })} dimColor>
+            {T.loading}
+          </Text>
+        ) : (
+          [
+            <Box key="sync" flexDirection="column">
+              {syncLine(r, d)}
+            </Box>,
+            d.incoming.length > 0 ? (
+              <Box key="in" flexDirection="column">
+                {heading(T.sectionIncoming, countLabel(d.behind))}
+                {d.incoming.slice(0, 6).map(c => commitRow(c, 'in'))}
+              </Box>
+            ) : null,
+            d.outgoing.length > 0 ? (
+              <Box key="out" flexDirection="column">
+                {heading(T.sectionOutgoing, countLabel(d.ahead))}
+                {d.outgoing.slice(0, 6).map(c => commitRow(c, 'out'))}
+              </Box>
+            ) : null,
+            d.filesTotal > 0 ? (
+              <Box key="files" flexDirection="column">
+                {heading(T.sectionChanges, String(d.filesTotal))}
+                {d.files.map(f => (
+                  <Box key={`file:${f.path}`} flexDirection="row" {...hoverRow}>
+                    <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                      <Text {...rt({ size: 'caption' })} wrap="truncate-middle">
+                        <Text color={fileColor(f.code)} {...rt({ mono: true })}>
+                          {f.code.replace(/ /g, '·')}
+                        </Text>{' '}
+                        {f.path}
+                      </Text>
+                    </Box>
+                    {copySlot(`copy-file:${f.path}`, f.path)}
+                  </Box>
+                ))}
+                {d.filesTotal > d.files.length ? (
+                  <Text {...rt({ size: 'caption' })} dimColor>
+                    {T.moreFiles(d.filesTotal - d.files.length)}
+                  </Text>
+                ) : null}
+              </Box>
+            ) : null,
+            d.recent.length > 0 ? (
+              <Box key="recent" flexDirection="column">
+                {heading(T.sectionRecentCommits)}
+                {d.recent.map(c => commitRow(c, 'recent'))}
+              </Box>
+            ) : null,
+            d.error ? (
+              <Text key="err" {...rt({ size: 'caption' })} color="error">
+                {d.error}
+              </Text>
+            ) : null,
+          ]
+        )}
+      </Box>
+    )
+
     const INLINE_BRANCH_MAX = 16
     const row = (node: TreeNode, index: number) => {
       const c = counts.get(node.path) ?? { repos: 0, changed: 0 }
       const isRepo = node.kind === 'repo'
       const isFolded = folded.has(node.path)
+      const isOpen = isRepo && opened === node.path
       const below = isRepo ? c.repos - 1 : c.repos
       const belowChanged = isRepo && node.repo && needsAttention(node.repo) ? c.changed - 1 : c.changed
       const prev = shown[index - 1]
@@ -620,7 +969,15 @@ export const register: Register = (on, options) => {
         >
           <Box flexDirection="row" alignItems="center">
             <Box width={SLOT} flexShrink={0} alignItems="center">
-              {node.hasChildren ? (
+              {isRepo ? (
+                <Button
+                  key={`open:${node.path}`}
+                  label={isOpen ? '▾' : '▸'}
+                  plain
+                  dimColor={!isOpen}
+                  onPress={() => toggleDetail($, node.path)}
+                />
+              ) : node.hasChildren ? (
                 <Button key={`fold:${node.path}`} label={isFolded ? '▸' : '▾'} plain dimColor onPress={() => toggleFold($, node.path)} />
               ) : (
                 <Text> </Text>
@@ -656,6 +1013,7 @@ export const register: Register = (on, options) => {
           </Box>
           {!isInlineSummary && node.repo ? summaryLine(node.repo, NAME_INDENT) : null}
           {node.repo ? commitLine(node.repo, NAME_INDENT, actionLinks(node.path, true)) : null}
+          {isOpen && node.repo ? detailPanel(node.repo, openDetail, NAME_INDENT) : null}
           {!hasHover && isMenuOpen ? (
             <Box flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={NAME_INDENT}>
               {actionButtons(node.path, isRepo)}
@@ -752,6 +1110,18 @@ export const register: Register = (on, options) => {
           </Box>
           {info.isRootRepo && info.rootRepo ? summaryLine(info.rootRepo, ICON_W) : null}
           {info.isRootRepo && info.rootRepo && (info.rootRepo.lastCommit || info.rootRepo.warning) ? commitLine(info.rootRepo, ICON_W) : null}
+          {info.isRootRepo && info.rootRepo ? (
+            <Box paddingLeft={ICON_W} flexDirection="row">
+              <Button
+                key="open:(root)"
+                label={opened === info.root ? `▾ ${T.hideDetails}` : `▸ ${T.showDetails}`}
+                plain
+                dimColor
+                onPress={() => toggleDetail($, info.root)}
+              />
+            </Box>
+          ) : null}
+          {info.isRootRepo && info.rootRepo && opened === info.root ? detailPanel(info.rootRepo, openDetail, ICON_W) : null}
           <Box marginTop={1} flexDirection="column">
             {Svg && allRepos.length > 0 ? (
               <Svg

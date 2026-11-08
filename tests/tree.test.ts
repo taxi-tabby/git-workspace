@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, supportsRichText, actionHref, actionOf, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
+import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, supportsRichText, actionHref, actionOf, parseCommitLines, parseChangedFiles, elapsed, parseAheadBehind, isNetworkPath, clean, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
 import type { RawNode } from '../hooks/tree'
 
 const repo = (path: string, children: RawNode[] = []): RawNode => ({
@@ -75,4 +75,26 @@ test('parsers', async () => {
   expect(actionHref('/home/me/x', 'copy')).toBe('file:///home/me/x#copy')
   expect(actionOf(actionHref('D:\\x', 'copy'))).toBe('copy')
   expect(actionOf('https://example.com')).toBeNull()
+  expect(parseCommitLines('a1\x1fa1full\x1fsubj\x1f2 h ago\x1fme\x1e\nb2\x1fb2full\x1fother\x1f3 d ago\x1fyou\x1e')).toEqual([
+    { hash: 'a1', full: 'a1full', subject: 'subj', age: '2 h ago', author: 'me' },
+    { hash: 'b2', full: 'b2full', subject: 'other', age: '3 d ago', author: 'you' },
+  ])
+  expect(parseChangedFiles(' M a.ts\0R  new.ts\0old.ts\0?? c.md\0')).toEqual([
+    { code: ' M', path: 'a.ts' },
+    { code: 'R ', path: 'new.ts' },
+    { code: '??', path: 'c.md' },
+  ])
+  // a worktree-side rename is followed by its original path too
+  expect(parseChangedFiles(' R new.ts\0old.ts\0 M a.ts\0').map(f => f.path)).toEqual(['new.ts', 'a.ts'])
+  expect(parseAheadBehind('3\t5\n')).toEqual({ ahead: 3, behind: 5 })
+  expect(parseAheadBehind('fatal: no upstream')).toBeNull()
+  expect(isNetworkPath('\\\\host\\share\\.git')).toBe(true)
+  expect(isNetworkPath('//host/share/.git')).toBe(true)
+  expect(isNetworkPath('D:/project/.git')).toBe(false)
+  expect(isNetworkPath('.git')).toBe(false)
+  // bidi and zero-width marks are stripped, so a name cannot reorder what is shown
+  expect(clean('evil\u202etxt.exe\u200b')).toBe('eviltxt.exe')
+  expect(elapsed(0, 59 * 60_000)).toEqual({ value: 59, unit: 'm' })
+  expect(elapsed(0, 3 * 3_600_000)).toEqual({ value: 3, unit: 'h' })
+  expect(elapsed(0, 72 * 3_600_000)).toEqual({ value: 3, unit: 'd' })
 })
