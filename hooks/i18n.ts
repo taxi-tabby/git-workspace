@@ -64,6 +64,20 @@ const en = {
   noChildRepos: 'No repositories below this one.',
   noRepos: (depth: number) => `No git repositories within ${depth} ${depth === 1 ? 'level' : 'levels'}.`,
   noChangedRepos: 'No repositories with changes.',
+
+  // section headings and redesign bits
+  sectionWorkspace: 'WORKSPACE',
+  sectionRepos: 'REPOSITORIES',
+  sectionScanFolder: 'SCAN FOLDER',
+  sectionRecent: 'RECENT',
+  sectionView: 'VIEW',
+  sectionLegend: 'LEGEND',
+  statusBarAlt: (clean: number, changed: number, unsynced: number) =>
+    `${clean} clean, ${changed} changed, ${unsynced} to sync`,
+  refresh: 'Refresh',
+  menu: 'Settings',
+  closeMenu: 'Close settings',
+  legendIcon: { repo: 'repo', folder: 'folder', worktree: 'worktree', submodule: 'submodule', branch: 'branch' } as Record<'repo' | 'folder' | 'worktree' | 'submodule' | 'branch', string>,
 }
 
 export type Strings = typeof en
@@ -120,6 +134,18 @@ const ko: Strings = {
   noChildRepos: '하위 저장소가 없습니다.',
   noRepos: depth => `깊이 ${depth} 안에 git 저장소가 없습니다.`,
   noChangedRepos: '변경된 저장소가 없습니다.',
+
+  sectionWorkspace: '워크스페이스',
+  sectionRepos: '저장소',
+  sectionScanFolder: '스캔 폴더',
+  sectionRecent: '최근',
+  sectionView: '보기',
+  sectionLegend: '범례',
+  statusBarAlt: (clean, changed, unsynced) => `깨끗함 ${clean}, 변경 ${changed}, 동기화 ${unsynced}`,
+  refresh: '새로고침',
+  menu: '설정',
+  closeMenu: '설정 닫기',
+  legendIcon: { repo: '저장소', folder: '폴더', worktree: '워크트리', submodule: '서브모듈', branch: '브랜치' },
 }
 
 export const STRINGS: Record<Lang, Strings> = { en, ko }

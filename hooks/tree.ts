@@ -119,7 +119,21 @@ export const parseGitVersion = (stdout: string): { version: string; isTooOld: bo
   return { version, isTooOld }
 }
 
-export const isDirty =(r: RepoInfo): boolean => r.staged + r.unstaged + r.untracked + r.conflicts > 0
+/** The first engine known to draw Text `size`, `weight` and `tabular` (older ones refuse them). */
+export const RICH_TEXT_SINCE: readonly [number, number, number] = [2, 1, 317]
+
+/** Whether an engine version string ("2.1.317", "2.1.320-dev") is at least RICH_TEXT_SINCE. */
+export const supportsRichText = (version: string): boolean => {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version)
+  if (!m) return false
+  const v = [Number(m[1]), Number(m[2]), Number(m[3])]
+  for (let i = 0; i < 3; i++) {
+    if (v[i]! !== RICH_TEXT_SINCE[i]) return v[i]! > RICH_TEXT_SINCE[i]!
+  }
+  return true
+}
+
+export const isDirty = (r: RepoInfo): boolean => r.staged + r.unstaged + r.untracked + r.conflicts > 0
 export const needsAttention = (r: RepoInfo): boolean =>
   isDirty(r) || r.ahead > 0 || r.behind > 0 || r.error !== '' || r.warning !== ''
 

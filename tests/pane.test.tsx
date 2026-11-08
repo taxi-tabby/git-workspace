@@ -133,23 +133,32 @@ test('English is the default', async ($, on) => {
   await ui.unmount()
 })
 
-test('a narrow pane gives the status its own line; a wide one keeps it beside the name', async ($, on) => {
+test('at any width the name and the status are separate Texts, so neither squeezes the other', async ($, on) => {
   fakeHost(on, '2.52.0')
   await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
   for (const surface of ['desktop', 'terminal'] as const) {
-    const narrow = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns: 28 } })
-    await narrow.press({ key: 'refresh' })
-    // the name line holds only the name; the branch is a Text of its own below it
-    const nameLine = await narrow.find({ type: 'Text', text: /◆ lib/ })
-    expect(nameLine?.text).not.toMatch(/⎇/)
-    expect(await narrow.find({ type: 'Text', text: /^ ⎇ main/ })).toBeTruthy()
-    // header buttons are still all there
-    for (const key of ['refresh', 'filter', 'menu']) expect(await narrow.find({ type: 'Button', key })).toBeTruthy()
-    await narrow.unmount()
-
-    const wide = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns: 90 } })
-    await wide.press({ key: 'refresh' })
-    expect((await wide.find({ type: 'Text', text: /◆ lib/ }))?.text).toMatch(/◆ lib ⎇ main/)
-    await wide.unmount()
+    for (const bodyColumns of [28, 90]) {
+      const ui = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns } })
+      await ui.press({ key: 'refresh' })
+      // the name line holds only the name; the branch and chips are a Text of their own
+      const name = await ui.find({ type: 'Text', text: /^lib$/ })
+      expect(name?.text).toBe('lib')
+      expect((await ui.find({ type: 'Text', text: /main ↑1/ }))?.text).not.toMatch(/lib/)
+      for (const key of ['refresh', 'filter', 'menu']) expect(await ui.find({ type: 'Button', key })).toBeTruthy()
+      await ui.unmount()
+    }
   }
+})
+
+test('the terminal draws glyphs where the desktop draws SVG icons', async ($, on) => {
+  fakeHost(on, '2.52.0')
+  await $.session.start({ cwd: '/ws', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: '◆' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: '▪' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: '⎇' })).toBeTruthy()
+  // one branch glyph per status, never two
+  expect(await ui.find({ type: 'Text', text: /⎇ ⎇/ })).toBeUndefined()
+  await ui.unmount()
 })

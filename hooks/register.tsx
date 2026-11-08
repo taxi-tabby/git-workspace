@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, UiPressArgument } from 'claude-code'
+import type { EngineInterface, Register, TextProps, UiPressArgument } from 'claude-code'
 
 import type { RepoInfo, ScanInfo, TreeNode } from '../types'
 import {
@@ -15,17 +15,22 @@ import {
   parentOf,
   parseGitVersion,
   parseStatus,
+  supportsRichText,
   subtreeCounts,
   untrustedFilters,
   visibleRows,
 } from './tree'
 import type { RawNode } from './tree'
 import { STRINGS, toLang } from './i18n'
+import { ICONS, statusBar } from './icons'
+import type { IconName } from './icons'
 import type { Strings } from './i18n'
 
 const PANE = 'git-workspace'
 // the strings of the language chosen in the plugin's settings (English by default)
 let T: Strings = STRINGS.en
+// Text `size` / `weight` / `tabular` arrived after 2.1.296; set from the engine's version at session start
+let richText = false
 const STORE_RECENT = 'recentRoots'
 const REFRESH_MS = 60_000
 const GIT_CONCURRENCY = 6
@@ -386,6 +391,7 @@ export const register: Register = (on, options) => {
   let debounce: { cancel: () => void } | undefined
 
   on('session.start', async ($, e, next) => {
+    richText = supportsRichText((await $.session.version()).version)
     await $.command.register({
       name: 'git-workspace',
       description: T.commandDescription,
@@ -416,8 +422,12 @@ export const register: Register = (on, options) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button, Link } = els
     const Input = 'Input' in els ? els.Input : undefined
+    // Decide by surface, not by `'Svg' in els`: the table is completed to every element
+    // name, so a surface without Svg may still hand out one that draws nothing.
+    const hasSvg = e.surface === 'desktop' || e.surface === 'vscode'
+    const Svg = hasSvg && 'Svg' in els ? els.Svg : undefined
     // desktop has a pointer: row actions float in on hover. Elsewhere they are
-    // drawn inline while the ⋯ menu is open, so the keyboard can reach them.
+    // drawn on a line of their own while the menu is open, so the keyboard reaches them.
     const hasHover = e.surface === 'desktop'
 
     const info: ScanInfo = await read($, scan)
@@ -433,28 +443,65 @@ export const register: Register = (on, options) => {
     const allRepos = [...rows.map(row => row.repo), info.rootRepo].filter((r): r is RepoInfo => r !== null)
     const repoCount = rows.filter(row => row.kind === 'repo').length + (info.isRootRepo ? 1 : 0)
     const dirtyTotal = allRepos.filter(isDirty).length
+    const syncOnly = allRepos.filter(r => !isDirty(r) && (r.ahead > 0 || r.behind > 0)).length
     const syncTotal = allRepos.filter(r => r.ahead > 0 || r.behind > 0).length
+    const cleanTotal = Math.max(0, allRepos.length - dirtyTotal - syncOnly)
     const isSessionRoot = info.root !== '' && samePath(info.root, info.sessionDir)
     const foldable = rows.filter(row => row.hasChildren).map(row => row.path)
 
-    // Layout rule: one line of text is ONE Text (nested Texts inside it for color), never
-    // several Texts side by side. Side-by-side Texts each shrink in a narrow pane until
-    // they are one character wide and read top to bottom. A Text that owns its whole
-    // line truncates instead.
+    // Layout rule: one line of text is ONE Text (nested Texts inside it for color). The
+    // only neighbours on a line are fixed-size icons and buttons, so nothing shrinks into a
+    // one-character column; a Text that owns its line truncates instead.
     const width = e.props.bodyColumns > 0 ? e.props.bodyColumns : (e.viewport?.columns ?? 80)
     const isNarrow = width < NARROW_COLUMNS
     const indentOf = (depth: number) => Math.min(depth * 2, Math.floor(width / 4))
+    const HOVER_BG = 'rgba(127, 127, 127, 0.14)'
+    const INSET_BG = 'rgba(127, 127, 127, 0.08)'
+    // a hover background only where there is a pointer
+    const hoverRow = hasHover ? { hover: { backgroundColor: HOVER_BG } } : {}
+    // text sizes and weights only where the engine knows them; older engines refuse the
+    // whole drawing over one unknown prop, so they get the plain text instead
+    const rt = (props: Pick<TextProps, 'size' | 'weight' | 'tabular'>) => (richText ? props : {})
 
-    // branch, sync and change chips, as Texts to nest inside a line's Text
-    const summaryParts = (r: RepoInfo) =>
+    const ICON_W = Svg ? 3 : 2 // the icon's column, with a little air before the label
+    // the fold chevron's column; a flat list has nothing to fold, so it keeps one cell of air
+    const SLOT = rows.some(row => row.hasChildren) ? 3 : 1
+    const NAME_INDENT = SLOT + ICON_W // secondary lines line up with the name
+
+    const icon = (name: IconName, color: 'subtle' | 'claude' | 'suggestion' | 'warning' = 'subtle') => (
+      <Box flexShrink={0} width={ICON_W}>
+        {Svg ? <Svg source={ICONS[name].source} alt={name} width={14} height={14} /> : <Text color={color}>{ICONS[name].glyph}</Text>}
+      </Box>
+    )
+
+    const heading = (label: string, right?: string) => (
+      <Box flexDirection="row" justifyContent="space-between">
+        <Text {...rt({ size: 'caption', weight: 'semibold' })} dimColor wrap="truncate-end">
+          {label}
+        </Text>
+        {right ? (
+          <Box flexShrink={0}>
+            <Text {...rt({ size: 'caption', tabular: true })} dimColor>
+              {right}
+            </Text>
+          </Box>
+        ) : null}
+      </Box>
+    )
+
+    const shortBranch = (branch: string, max: number) => (branch.length > max ? `${branch.slice(0, max - 1)}…` : branch)
+
+    // branch, sync and change chips, as Texts to nest inside one line's Text (no glyph:
+    // the caller draws the branch icon beside it)
+    const summaryParts = (r: RepoInfo, branchMax: number) =>
       r.error ? (
-        <Text color="error"> ✕ {r.error}</Text>
+        <Text color="error">✕ {r.error}</Text>
       ) : (
         <Text>
-          <Text color={r.isDetached ? 'warning' : 'suggestion'}> ⎇ {r.branch}</Text>
+          <Text color={r.isDetached ? 'warning' : 'suggestion'}>{shortBranch(r.branch, branchMax)}</Text>
           {r.ahead ? <Text color="success"> ↑{r.ahead}</Text> : null}
           {r.behind ? <Text color="warning"> ↓{r.behind}</Text> : null}
-          {!r.upstream && !r.isDetached ? <Text dimColor> {T.local}</Text> : null}
+          {!r.upstream && !r.isDetached ? <Text color="subtle"> {T.local}</Text> : null}
           {r.warning ? (
             <Text color="warning"> ⚠</Text>
           ) : isDirty(r) ? (
@@ -462,7 +509,7 @@ export const register: Register = (on, options) => {
               {r.conflicts ? <Text color="error"> !{r.conflicts}</Text> : null}
               {r.staged ? <Text color="success"> +{r.staged}</Text> : null}
               {r.unstaged ? <Text color="warning"> ~{r.unstaged}</Text> : null}
-              {r.untracked ? <Text dimColor> ?{r.untracked}</Text> : null}
+              {r.untracked ? <Text color="subtle"> ?{r.untracked}</Text> : null}
             </Text>
           ) : (
             <Text color="success"> ✓</Text>
@@ -470,18 +517,43 @@ export const register: Register = (on, options) => {
         </Text>
       )
 
-    const repoSummary = (r: RepoInfo) => <Text wrap="truncate-end">{summaryParts(r)}</Text>
+    // roughly how many cells the inline status takes, to decide whether it fits
+    const summaryLength = (r: RepoInfo, branchMax: number) =>
+      Math.min(r.branch.length, branchMax) +
+      (r.ahead ? String(r.ahead).length + 2 : 0) +
+      (r.behind ? String(r.behind).length + 2 : 0) +
+      (!r.upstream && !r.isDetached ? T.local.length + 1 : 0) +
+      (isDirty(r)
+        ? [r.conflicts, r.staged, r.unstaged, r.untracked].filter(Boolean).reduce((n, v) => n + String(v).length + 2, 0)
+        : 2) +
+      ICON_W
 
-    const repoDetail = (r: RepoInfo, indent: number) =>
+    // the status on a line of its own: branch icon, then the chips
+    const summaryLine = (r: RepoInfo, indent: number) => (
+      <Box flexDirection="row" paddingLeft={indent}>
+        {r.error ? null : icon('branch', 'suggestion')}
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          <Text {...rt({ size: 'footnote' })} wrap="truncate-end">
+            {summaryParts(r, 40)}
+          </Text>
+        </Box>
+      </Box>
+    )
+
+    const commitLine = (r: RepoInfo, indent: number) =>
       r.lastCommit || r.warning ? (
         <Box flexDirection="column" paddingLeft={indent}>
           {r.lastCommit ? (
-            <Text dimColor wrap="truncate-end">
+            <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-end">
               {r.lastCommitAge ? `${r.lastCommitAge} · ` : ''}
               {r.lastCommit}
             </Text>
           ) : null}
-          {r.warning ? <Text color="warning" wrap="truncate-end">{r.warning}</Text> : null}
+          {r.warning ? (
+            <Text {...rt({ size: 'caption' })} color="warning" wrap="truncate-end">
+              {r.warning}
+            </Text>
+          ) : null}
         </Box>
       ) : null
 
@@ -492,7 +564,7 @@ export const register: Register = (on, options) => {
       ) : null,
     ]
 
-    const SLOT = 3 // width of the fold toggle column; detail lines indent past it and the icon
+    const INLINE_BRANCH_MAX = 16
     const row = (node: TreeNode, index: number) => {
       const c = counts.get(node.path) ?? { repos: 0, changed: 0 }
       const isRepo = node.kind === 'repo'
@@ -501,53 +573,74 @@ export const register: Register = (on, options) => {
       const belowChanged = isRepo && node.repo && needsAttention(node.repo) ? c.changed - 1 : c.changed
       const prev = shown[index - 1]
       const isGroupEdge = node.depth === 0 && index > 0 && (node.hasChildren || prev?.hasChildren === true || (prev?.depth ?? 0) > 0)
-      // wide: name and status share one line; narrow: status gets a line of its own
-      const isInlineSummary = !isNarrow && node.repo !== null
+      // the status sits at the right end of the name line only when it leaves the name
+      // at least 12 cells; otherwise (and for errors) it gets a line of its own
+      const nameRoom = width - indentOf(node.depth) - NAME_INDENT
+      const isInlineSummary =
+        !isNarrow && node.repo !== null && !node.repo.error && nameRoom - summaryLength(node.repo, INLINE_BRANCH_MAX) - 1 >= 12
+      const kindIcon: IconName = !isRepo ? 'folder' : node.gitKind === 'repo' ? 'repo' : node.gitKind
       return (
-        <Box key={`row:${node.path}`} flexDirection="column" paddingLeft={indentOf(node.depth)} marginTop={isGroupEdge ? 1 : 0}>
-          <Box flexDirection="row">
-            <Box width={SLOT} flexShrink={0}>
+        <Box
+          key={`row:${node.path}`}
+          flexDirection="column"
+          paddingLeft={indentOf(node.depth)}
+          marginTop={isGroupEdge ? 1 : 0}
+          {...hoverRow}
+        >
+          <Box flexDirection="row" alignItems="center">
+            <Box width={SLOT} flexShrink={0} alignItems="center">
               {node.hasChildren ? (
-                <Button key={`fold:${node.path}`} label={isFolded ? '▸' : '▾'} plain onPress={() => toggleFold($, node.path)} />
+                <Button key={`fold:${node.path}`} label={isFolded ? '▸' : '▾'} plain dimColor onPress={() => toggleFold($, node.path)} />
               ) : (
                 <Text> </Text>
               )}
             </Box>
+            {icon(kindIcon, isRepo ? 'claude' : 'subtle')}
             <Box flexGrow={1} flexShrink={1} minWidth={0}>
               <Text wrap="truncate-end">
-                <Text color={isRepo ? 'claude' : 'subtle'}>{isRepo ? '◆' : '▪'}</Text>{' '}
-                <Text bold={isRepo}>{node.label}</Text>
-                {isRepo && node.gitKind !== 'repo' ? <Text dimColor> {node.gitKind}</Text> : null}
-                {isFolded && below > 0 ? (
-                  <Text dimColor>
+                <Text {...rt({ weight: isRepo ? 'medium' : 'regular' })}>{node.label}</Text>
+                {isRepo && node.gitKind !== 'repo' ? (
+                  <Text {...rt({ size: 'caption' })} dimColor>
                     {' '}
-                    · {T.reposBelow(below)}
-                    {belowChanged > 0 ? <Text color="warning"> ({T.changedBelow(belowChanged)})</Text> : null}
+                    {node.gitKind}
                   </Text>
                 ) : null}
-                {isInlineSummary && node.repo ? summaryParts(node.repo) : null}
+                {isFolded && below > 0 ? (
+                  <Text {...rt({ size: 'caption' })} dimColor>
+                    {'  '}
+                    {T.reposBelow(below)}
+                    {belowChanged > 0 ? <Text color="warning"> · {T.changedBelow(belowChanged)}</Text> : null}
+                  </Text>
+                ) : null}
               </Text>
             </Box>
-            {hasHover ? (
-              // floats over the row's right end on hover: takes no room, moves nothing
-              <Box
-                flexDirection="row"
-                gap={1}
-                position="absolute"
-                top={0}
-                right={0}
-                display="none"
-                hover={{ display: 'flex' }}
-              >
-                {actionButtons(node.path, isRepo)}
+            {isInlineSummary && node.repo ? (
+              // fixed-size neighbour, sized to fit above: it keeps its width, the name truncates
+              <Box flexShrink={0} marginLeft={1} flexDirection="row" alignItems="center">
+                {icon('branch', 'suggestion')}
+                <Text {...rt({ size: 'footnote' })}>{summaryParts(node.repo, INLINE_BRANCH_MAX)}</Text>
               </Box>
             ) : null}
           </Box>
-          {!isInlineSummary && node.repo ? <Box paddingLeft={SLOT}>{repoSummary(node.repo)}</Box> : null}
-          {node.repo ? repoDetail(node.repo, SLOT + 2) : null}
+          {!isInlineSummary && node.repo ? summaryLine(node.repo, NAME_INDENT) : null}
+          {node.repo ? commitLine(node.repo, NAME_INDENT) : null}
+          {hasHover ? (
+            // floats over the row's lower right on hover: takes no room, moves nothing,
+            // and leaves the name line's status visible
+            <Box
+              flexDirection="row"
+              gap={1}
+              position="absolute"
+              bottom={0}
+              right={0}
+              display="none"
+              hover={{ display: 'flex' }}
+            >
+              {actionButtons(node.path, isRepo)}
+            </Box>
+          ) : null}
           {!hasHover && isMenuOpen ? (
-            // no pointer: the actions get a line of their own while the menu is open
-            <Box flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={SLOT + 2}>
+            <Box flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={NAME_INDENT}>
               {actionButtons(node.path, isRepo)}
             </Box>
           ) : null}
@@ -557,75 +650,127 @@ export const register: Register = (on, options) => {
 
     const headerButtons = (
       <Box flexDirection="row" gap={1} flexShrink={0}>
-        <Button key="refresh" label="⟳" hotkey="r" variant="secondary" onPress={() => rescan($)} />
+        <Button key="refresh" label={T.refresh} hotkey="r" variant="secondary" onPress={() => rescan($)}>
+          ⟳
+        </Button>
         <Button
           key="filter"
-          label={T.changedOnly}
+          label={dirtyOnly ? `✓ ${T.changedOnly}` : T.changedOnly}
           hotkey="f"
-          variant={dirtyOnly ? 'primary' : 'secondary'}
+          variant="secondary"
           onPress={() => update($, onlyDirty, v => !v)}
         />
         <Button
           key="menu"
-          label={isMenuOpen ? '✕' : '⋯'}
+          label={T.menu}
           hotkey="p"
           variant="secondary"
           onPress={() => update($, isEditingRoot, v => !v)}
-        />
+        >
+          {isMenuOpen ? '✕' : '⋯'}
+        </Button>
       </Box>
     )
-    const headerTitle = (
-      <Text bold wrap="truncate-end">
-        {clean(baseName(info.root)) || T.computing}
-        {isSessionRoot ? <Text dimColor> · {T.sessionFolder}</Text> : null}
+
+    const rootLine = (
+      <Box flexDirection="row" alignItems="center">
+        {icon(info.isRootRepo ? 'repo' : 'folder', info.isRootRepo ? 'claude' : 'subtle')}
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          <Text {...rt({ weight: 'semibold' })} wrap="truncate-end">
+            {clean(baseName(info.root)) || T.computing}
+          </Text>
+        </Box>
+      </Box>
+    )
+
+    const statsText = (
+      <Text {...rt({ size: 'footnote' })} dimColor wrap="truncate-end">
+        {T.repos(repoCount)}
+        {dirtyTotal ? <Text color="warning"> · {T.changed(dirtyTotal)}</Text> : null}
+        {syncTotal ? <Text color="suggestion"> · {T.unsynced(syncTotal)}</Text> : null}
+        {' · '}
+        {info.isScanning ? T.scanning : clockText(info.scannedAt)}
+      </Text>
+    )
+
+    // the settings group: an inset block on desktop, a framed one where there is no fill
+    const groupProps = hasHover
+      ? { borderStyle: 'round', borderDimColor: true, backgroundColor: INSET_BG, paddingX: 1 }
+      : { borderStyle: 'round', borderDimColor: true, paddingX: 1 }
+
+    const legendKinds = Svg ? (
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+        {(['repo', 'folder', 'worktree', 'submodule', 'branch'] as const).map(name => (
+          <Box key={`legend:${name}`} flexDirection="row" flexShrink={0} alignItems="center">
+            {icon(name)}
+            <Text {...rt({ size: 'caption' })} dimColor>
+              {T.legendIcon[name]}
+            </Text>
+          </Box>
+        ))}
+      </Box>
+    ) : (
+      <Text {...rt({ size: 'caption' })} dimColor>
+        {T.legendKinds}
       </Text>
     )
 
     return (
       <Box flexDirection="column" gap={1}>
-        {/* header: where we are + three controls (stacked when narrow) */}
-        <Box flexDirection="column">
-          {isNarrow ? (
-            <Box flexDirection="column">
-              {headerTitle}
-              {headerButtons}
-            </Box>
-          ) : (
-            <Box flexDirection="row" alignItems="center" gap={1}>
-              <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                {headerTitle}
-              </Box>
-              {headerButtons}
-            </Box>
-          )}
-          <Text dimColor wrap="truncate-middle">{clean(info.root)}</Text>
-          {info.isRootRepo && info.rootRepo ? repoSummary(info.rootRepo) : null}
-          <Text dimColor>
-            {T.repos(repoCount)}
-            {dirtyTotal ? <Text color="warning"> · {T.changed(dirtyTotal)}</Text> : null}
-            {syncTotal ? <Text color="warning"> · {T.unsynced(syncTotal)}</Text> : null}
-            {' · '}
-            {info.isScanning ? T.scanning : clockText(info.scannedAt)}
-          </Text>
+        {/* toolbar: the section name at left, the three controls at right */}
+        <Box flexDirection="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1}>
+          <Box flexGrow={1} flexShrink={1} minWidth={0}>
+            {heading(isSessionRoot ? `${T.sectionWorkspace} · ${T.sessionFolder.toUpperCase()}` : T.sectionWorkspace)}
+          </Box>
+          {headerButtons}
+        </Box>
+
+        {/* WORKSPACE card: where we are and a status bar */}
+        <Box flexDirection="column" {...groupProps}>
+          {rootLine}
+          <Box paddingLeft={ICON_W}>
+            <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-middle">
+              {clean(info.root)}
+            </Text>
+          </Box>
+          {info.isRootRepo && info.rootRepo ? summaryLine(info.rootRepo, ICON_W) : null}
+          {info.isRootRepo && info.rootRepo ? commitLine(info.rootRepo, ICON_W) : null}
+          <Box marginTop={1} flexDirection="column">
+            {Svg && allRepos.length > 0 ? (
+              <Svg
+                source={statusBar(cleanTotal, dirtyTotal, syncOnly)}
+                alt={T.statusBarAlt(cleanTotal, dirtyTotal, syncOnly)}
+                height={4}
+              />
+            ) : null}
+            {statsText}
+          </Box>
           {info.isTruncated ? (
-            <Text color="warning">{T.truncated(info.visited)}</Text>
+            <Text {...rt({ size: 'footnote' })} color="warning">
+              {T.truncated(info.visited)}
+            </Text>
           ) : null}
-          {info.error ? <Text color="error">{info.error}</Text> : null}
+          {info.error ? (
+            <Text {...rt({ size: 'footnote' })} color="error">
+              {info.error}
+            </Text>
+          ) : null}
         </Box>
 
         {/* git missing or too old: say so plainly, with where to get it */}
         {info.gitProblem ? (
-          <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
-            <Text color="warning" bold>
-              {info.gitProblem === 'missing'
-                ? T.gitMissingTitle
-                : T.gitOldTitle(info.gitVersion, MIN_GIT.join('.'))}
-            </Text>
-            <Text>
-              {info.gitProblem === 'missing'
-                ? T.gitMissingBody
-                : T.gitOldBody}
-            </Text>
+          <Box flexDirection="column" {...groupProps}>
+            <Box flexDirection="row" alignItems="center">
+              {icon('warning', 'warning')}
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                <Text color="warning" {...rt({ weight: 'semibold' })}>
+                  {info.gitProblem === 'missing'
+                    ? T.gitMissingTitle.replace(/^⚠ /, '')
+                    : T.gitOldTitle(info.gitVersion, MIN_GIT.join('.')).replace(/^⚠ /, '')}
+                </Text>
+              </Box>
+            </Box>
+            <Text {...rt({ size: 'footnote' })}>{info.gitProblem === 'missing' ? T.gitMissingBody : T.gitOldBody}</Text>
             <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
               <Link href="https://git-scm.com/downloads" label={T.gitDownload} />
               <Button key="git-recheck" label={T.checkAgain} variant="secondary" onPress={() => rescan($)} />
@@ -635,10 +780,11 @@ export const register: Register = (on, options) => {
 
         {/* settings, folded away behind ⋯ */}
         {isMenuOpen ? (
-          <Box flexDirection="column" gap={1} borderStyle="round" borderDimColor paddingX={1}>
+          <Box flexDirection="column" gap={1} {...groupProps}>
             <Box flexDirection="column">
-              <Text dimColor>{T.scanRoot}</Text>
+              {heading(T.sectionScanFolder)}
               {Input ? (
+                <Box width="100%" flexDirection="column">
                 <Input
                   key="root-input"
                   placeholder={T.rootPlaceholder}
@@ -646,8 +792,11 @@ export const register: Register = (on, options) => {
                   submitLabel={T.apply}
                   onSubmit={value => setRoot($, value)}
                 />
+                </Box>
               ) : (
-                <Text dimColor>{T.rootCommandHint}</Text>
+                <Text {...rt({ size: 'footnote' })} dimColor>
+                  {T.rootCommandHint}
+                </Text>
               )}
               <Box flexDirection="row" gap={1} flexWrap="wrap">
                 <Button key="session-root" label={T.sessionFolderButton} variant="secondary" onPress={() => setRoot($, '')} />
@@ -662,58 +811,67 @@ export const register: Register = (on, options) => {
 
             {recent.length > 0 ? (
               <Box flexDirection="column">
-                <Text dimColor>{T.recent}</Text>
+                {heading(T.sectionRecent)}
                 {recent.map(path => (
-                  <Button key={`recent:${path}`} plain dimColor onPress={() => setRoot($, path)}>
-                    {clean(baseName(path))} <Text dimColor>{clean(parentOf(path))}</Text>
-                  </Button>
+                  <Box key={`recent-row:${path}`} flexDirection="column" {...hoverRow}>
+                    <Box flexDirection="row" alignItems="center">
+                      {icon('folder')}
+                      {/* a short fixed label: the folder's own name */}
+                      <Button key={`recent:${path}`} label={clean(baseName(path)) || clean(path)} plain onPress={() => setRoot($, path)} />
+                    </Box>
+                    <Box paddingLeft={ICON_W}>
+                      <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-middle">
+                        {clean(parentOf(path))}
+                      </Text>
+                    </Box>
+                  </Box>
                 ))}
               </Box>
             ) : null}
 
-            <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-              <Button
-                key="fold-all"
-                label={folded.size > 0 ? T.expandAll : T.collapseAll}
-                variant="secondary"
-                onPress={() => update($, collapsed, list => (list.length > 0 ? [] : foldable))}
-              />
-              <Text dimColor wrap="truncate-end">{T.depth}</Text>
-              <Button
-                key="depth-down"
-                label="−"
-                variant="secondary"
-                onPress={() => changeDepth($, -1)}
-              />
-              <Box flexShrink={0}>
-                <Text>{depth}</Text>
+            <Box flexDirection="column">
+              {heading(T.sectionView)}
+              <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+                <Button
+                  key="fold-all"
+                  label={folded.size > 0 ? T.expandAll : T.collapseAll}
+                  variant="secondary"
+                  onPress={() => update($, collapsed, list => (list.length > 0 ? [] : foldable))}
+                />
+                <Box flexShrink={0}>
+                  <Text {...rt({ size: 'footnote' })} dimColor>
+                    {T.depth}
+                  </Text>
+                </Box>
+                <Button key="depth-down" label="−" variant="secondary" onPress={() => changeDepth($, -1)} />
+                <Box flexShrink={0}>
+                  <Text {...rt({ size: 'footnote', tabular: true })}>{depth}</Text>
+                </Box>
+                <Button key="depth-up" label="+" variant="secondary" onPress={() => changeDepth($, 1)} />
               </Box>
-              <Button
-                key="depth-up"
-                label="+"
-                variant="secondary"
-                onPress={() => changeDepth($, 1)}
-              />
             </Box>
 
             <Box flexDirection="column">
-              <Text dimColor>{T.legendKinds}</Text>
-              <Text dimColor>{T.legendChanges}</Text>
-              {hasHover ? <Text dimColor>{T.legendHover}</Text> : null}
-              <Text dimColor>{T.gitVersion(info.gitVersion)}</Text>
+              {heading(T.sectionLegend, T.gitVersion(info.gitVersion))}
+              {legendKinds}
+              <Text {...rt({ size: 'caption' })} dimColor>
+                {T.legendChanges}
+              </Text>
+              {hasHover ? (
+                <Text {...rt({ size: 'caption' })} dimColor>
+                  {T.legendHover}
+                </Text>
+              ) : null}
             </Box>
           </Box>
         ) : null}
 
-        {/* the tree */}
-        <Box flexDirection="column">
+        {/* REPOSITORIES card: the tree */}
+        {heading(T.sectionRepos, rows.length ? String(repoCount) : undefined)}
+        <Box flexDirection="column" {...groupProps}>
           {shown.length === 0 && !info.isScanning ? (
-            <Text dimColor>
-              {rows.length === 0
-                ? info.isRootRepo
-                  ? T.noChildRepos
-                  : T.noRepos(depth)
-                : T.noChangedRepos}
+            <Text {...rt({ size: 'footnote' })} dimColor>
+              {rows.length === 0 ? (info.isRootRepo ? T.noChildRepos : T.noRepos(depth)) : T.noChangedRepos}
             </Text>
           ) : null}
           {shown.map(row)}
