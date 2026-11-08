@@ -1,0 +1,36 @@
+name: Bug report
+description: Something in the pane is wrong, broken or misleading
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead. A screenshot of the pane helps a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce
+      description: The folder layout you scanned (nested repos, worktrees, submodules…) and what you pressed.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: git-workspace version, Claude Code version, git version (shown in Settings → LEGEND), OS
+      placeholder: git-workspace 0.6.3 · Claude Code 2.1.317 · git 2.52.0 · Windows 11
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options: [Desktop app, Terminal, VS Code, Other]
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: >-
+        Found a way for a repository to make the pane run a program or reach the network?
+        Please don't open an issue: report it privately under **Security → Report a vulnerability**.

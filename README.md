@@ -167,6 +167,12 @@ repository to load it from disk in every session. Saving a file reloads the mod.
 `claude plugin test .` runs the tests. Bump `version` in `.claude-plugin/plugin.json` for every
 release, because installed copies update only when it changes.
 
+## Contributing
+
+Changes go through pull requests into `main`; CI runs `claude plugin validate --strict` and
+`claude plugin test`, and must pass before a PR can be squash-merged. The PR template lists
+what to check. Security problems: see [SECURITY.md](SECURITY.md).
+
 ## Support
 
 Report problems and ideas in
