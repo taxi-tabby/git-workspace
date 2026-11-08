@@ -1175,12 +1175,12 @@ export const register: Register = (on, options) => {
         <Box
           key={`row:${node.path}`}
           flexDirection="row"
-          paddingY={sp('xs', 0)}
-          marginTop={isGroupEdge ? 1 : 0}
-          {...hoverRow}
+          paddingY={hasHover ? 0 : sp('xs', 0)}
+          marginTop={!hasHover && isGroupEdge ? 1 : !isRepo && index > 0 ? sp('sm', 0) : 0}
+          {...(isRepo ? hoverRow : {})}
         >
           {gutter(indentOf(node.depth))}
-          <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={isRepo && hasHover ? sp('xs', 0) : 0} {...(isRepo ? itemCard : {})}>
           <Box flexDirection="row" alignItems="center">
             <Box width={SLOT} flexShrink={0} alignItems="center">
               {isRepo && !node.repo?.isNetworkGitdir ? (
@@ -1305,6 +1305,13 @@ export const register: Register = (on, options) => {
       ? { borderStyle: 'round', borderDimColor: true, backgroundColor: INSET_BG, paddingX: sp('md', 1), paddingY: sp('sm', 0) }
       : { borderStyle: 'round', borderDimColor: true, paddingX: 1 }
 
+    // one repository = one card on desktop; cards sit apart in a plain list. The terminal,
+    // where a frame costs two rows each, keeps a single framed list instead.
+    const itemCard = hasHover
+      ? { borderStyle: 'round', borderDimColor: true, backgroundColor: INSET_BG, paddingX: sp('md', 1), paddingY: sp('sm', 0) }
+      : {}
+    const listProps = hasHover ? { gap: sp('sm', 0) } : groupProps
+
     const legendKinds = Svg ? (
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
         {(['repo', 'folder', 'worktree', 'submodule', 'branch'] as const).map(name => (
@@ -1333,20 +1340,29 @@ export const register: Register = (on, options) => {
         </Box>
 
         {/* WORKSPACE card: where we are and a status bar */}
-        <Box flexDirection="column" {...groupProps}>
-          {rootLine}
-          <Box flexDirection="row">
-            {gutter(NAME_INDENT)}
-            <Box flexGrow={1} flexShrink={1} minWidth={0}>
-              <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-middle">
-                {clean(info.root)}
-              </Text>
+        <Box flexDirection="column" gap={sp('md', 1)} {...groupProps}>
+          {/* 1. where: name and path */}
+          <Box flexDirection="column">
+            {rootLine}
+            <Box flexDirection="row">
+              {gutter(NAME_INDENT)}
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                <Text {...rt({ size: 'caption' })} dimColor wrap="truncate-middle">
+                  {clean(info.root)}
+                </Text>
+              </Box>
             </Box>
           </Box>
-          {info.isRootRepo && info.rootRepo ? summaryLine(info.rootRepo, NAME_INDENT) : null}
-          {info.isRootRepo && info.rootRepo && (info.rootRepo.lastCommit || info.rootRepo.warning) ? commitLine(info.rootRepo, NAME_INDENT) : null}
-          {info.isRootRepo && info.rootRepo && rootOpen ? detailPanel(info.rootRepo, openDetail, NAME_INDENT) : null}
-          <Box marginTop={1} flexDirection="column">
+          {/* 2. the root repository's state */}
+          {info.isRootRepo && info.rootRepo ? (
+            <Box flexDirection="column" gap={sp('xs', 0)}>
+              {summaryLine(info.rootRepo, NAME_INDENT)}
+              {info.rootRepo.lastCommit || info.rootRepo.warning ? commitLine(info.rootRepo, NAME_INDENT) : null}
+              {rootOpen ? detailPanel(info.rootRepo, openDetail, NAME_INDENT) : null}
+            </Box>
+          ) : null}
+          {/* 3. everything under it, in one bar and one line */}
+          <Box flexDirection="column" gap={sp('xs', 0)}>
             {Svg && allRepos.length > 0 ? (
               <Svg
                 source={statusBar(cleanTotal, dirtyTotal, syncOnly)}
@@ -1482,11 +1498,13 @@ export const register: Register = (on, options) => {
 
         {/* REPOSITORIES card: the tree */}
         {heading(T.sectionRepos, rows.length ? String(repoCount) : undefined)}
-        <Box flexDirection="column" {...groupProps}>
+        <Box flexDirection="column" {...listProps}>
           {shown.length === 0 && !info.isScanning ? (
-            <Text {...rt({ size: 'footnote' })} dimColor>
-              {rows.length === 0 ? (info.isRootRepo ? T.noChildRepos : T.noRepos(depth)) : T.noChangedRepos}
-            </Text>
+            <Box flexDirection="column" {...(hasHover ? itemCard : {})}>
+              <Text {...rt({ size: 'footnote' })} dimColor>
+                {rows.length === 0 ? (info.isRootRepo ? T.noChildRepos : T.noRepos(depth)) : T.noChangedRepos}
+              </Text>
+            </Box>
           ) : null}
           {shown.map(row)}
         </Box>
