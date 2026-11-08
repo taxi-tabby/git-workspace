@@ -105,7 +105,13 @@ so even a partial clone can't fetch a missing object, and `GIT_TERMINAL_PROMPT=0
 prompts. Before git runs in a repository, the pane reads its `.git` file, the git folder's real
 path, `commondir` and `objects/info/alternates`. If any of them points at a network path
 (`\\host\share`, `//host/share`), the repository is listed but git never runs there, details
-included. A repository
+included. The same applies when a symbolic link sits inside the git folder (the folder
+itself, refs, logs, info, worktrees, objects/info, objects/pack), when a config file git would
+read is oversized or unreadable, when an include path is written in a form git might decode
+differently (quotes, escapes, comment marks, line continuations), or when a check runs out of
+its budget. Known limits: a drive letter mapped to a network share (`net use Z:`) looks like a
+local path to these checks, and untracked nested repositories deeper than the scan depth are
+not inspected. A repository
 that defines its own filter drivers, or whose config cannot be read, gets its branch shown
 without `git status`. Control characters are stripped from everything shown.
 

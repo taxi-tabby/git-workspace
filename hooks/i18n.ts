@@ -12,7 +12,7 @@ const en = {
 
   // repository status
   skippedUnchecked: "Skipped change status: couldn't read the repository's config",
-  skippedFilters: (names: string) => `Skipped change status: the repository sets its own filter drivers (${names})`,
+  skippedFilters: (count: number) => `Skipped change status: the repository sets its own filter ${count === 1 ? 'driver' : `drivers (${count})`}`,
   statusFailed: 'git status failed',
   noCommits: '(no commits)',
   folderMissing: (root: string) => `Folder not found: ${root}`,
@@ -112,7 +112,7 @@ const ko: Strings = {
   commandOpened: root => `Git 워크스페이스 패널을 열었습니다. 스캔 루트: ${root}`,
 
   skippedUnchecked: '저장소 설정을 확인하지 못해 변경 상태 조회를 건너뜀',
-  skippedFilters: names => `저장소 설정의 filter 드라이버(${names}) 때문에 변경 상태 조회를 건너뜀`,
+  skippedFilters: count => `저장소 설정의 filter 드라이버 ${count}개 때문에 변경 상태 조회를 건너뜀`,
   statusFailed: 'git status 실패',
   noCommits: '(커밋 없음)',
   folderMissing: root => `폴더가 없습니다: ${root}`,

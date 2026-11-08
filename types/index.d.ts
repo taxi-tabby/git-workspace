@@ -60,7 +60,10 @@ export type CommitLine = {
 /** A changed file: its two-letter porcelain code ("M ", " M", "??", "UU") and path. */
 export type ChangedFile = {
   code: string
+  /** cleaned for display */
   path: string
+  /** as git wrote it, for the clipboard */
+  raw: string
 }
 
 /** What an opened repository row shows below itself. Read on demand, never fetched. */

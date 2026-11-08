@@ -20,6 +20,10 @@ import {
   actionOf,
   elapsed,
   isNetworkPath,
+  configValues,
+  allFilterNames,
+  filterOffArgs,
+  shorten,
   parseAheadBehind,
   parseChangedFiles,
   parseCommitLines,
@@ -135,9 +139,9 @@ async function gitFilterConfig($: Engine, cwd: string) {
 }
 
 /** Branch, upstream, ahead/behind and changed files. */
-async function gitStatus($: Engine, cwd: string) {
+async function gitStatus($: Engine, cwd: string, filterOff: readonly string[]) {
   return $.process.run(
-    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'status', '--porcelain=v2', '--branch', '--untracked-files=normal', '--ignore-submodules=all'],
+    ['git', ...SAFE_GIT_ARGS, ...filterOff, '-C', cwd, 'status', '--porcelain=v2', '--branch', '--untracked-files=normal', '--ignore-submodules=all'],
     GIT_OPTIONS,
   )
 }
@@ -153,7 +157,7 @@ async function gitHead($: Engine, cwd: string) {
 /** Short hash, subject and age of the last commit. */
 async function gitLastCommit($: Engine, cwd: string) {
   return $.process.run(
-    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-1', '--no-show-signature', '--format=%h %s%x1f%cr'],
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-1', '--no-show-signature', '--format=%h %s%x00%cr'],
     GIT_OPTIONS,
   )
 }
@@ -174,11 +178,14 @@ async function inspectRepo($: Engine, path: string): Promise<RepoInfo> {
   let repo = emptyRepo()
   try {
     // A filter driver set by the repository itself could run a program during
-    // `git status`, so such a repository gets its branch read without status.
+    // `git status`, so such a repository gets its branch read without status. Drivers
+    // from the person's own config (git-lfs, say) are trusted but still switched off for
+    // the status call: a repository's .gitattributes alone could otherwise start them.
     const filters = await gitFilterConfig($, path)
     // exit 1 with no output is git's "no such key"; any other failure fails closed
     const isUnchecked = filters.exitCode !== 0 && !(filters.exitCode === 1 && filters.stdout.trim() === '')
     const risky = filters.exitCode === 0 ? untrustedFilters(filters.stdout) : []
+    const filterOff = filters.exitCode === 0 ? filterOffArgs(allFilterNames(filters.stdout)) : []
 
     if (isUnchecked || risky.length > 0) {
       const head = await gitHead($, path)
@@ -186,9 +193,9 @@ async function inspectRepo($: Engine, path: string): Promise<RepoInfo> {
       repo.isDetached = head.exitCode !== 0
       repo.warning = isUnchecked
         ? T.skippedUnchecked
-        : T.skippedFilters(risky.join(', '))
+        : T.skippedFilters(risky.length)
     } else {
-      const status = await gitStatus($, path)
+      const status = await gitStatus($, path, filterOff)
       if (status.exitCode !== 0) {
         return sanitize({ ...repo, error: status.stderr.trim().split(/\r?\n/)[0] || T.statusFailed })
       }
@@ -197,7 +204,7 @@ async function inspectRepo($: Engine, path: string): Promise<RepoInfo> {
 
     const last = await gitLastCommit($, path)
     if (last.exitCode === 0) {
-      const [subject, age] = last.stdout.trim().split('\x1f')
+      const [subject, age] = last.stdout.trim().split('\0')
       const s = clean(subject ?? '')
       repo.lastCommit = s.length > 90 ? `${s.slice(0, 89)}…` : s
       repo.lastCommitAge = age ?? ''
@@ -236,7 +243,7 @@ async function inspectAll($: Engine, paths: string[]): Promise<RepoInfo[]> {
 /** The last 8 commits of the checked-out branch. */
 async function gitRecent($: Engine, cwd: string) {
   return $.process.run(
-    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-8', '--no-show-signature', '--format=%h%x1f%H%x1f%s%x1f%cr%x1f%an%x1e', '--'],
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-8', '--no-show-signature', '--format=%h%x00%H%x00%s%x00%cr%x00%an%x00', '--'],
     GIT_OPTIONS,
   )
 }
@@ -244,7 +251,7 @@ async function gitRecent($: Engine, cwd: string) {
 /** Up to 20 commits on the upstream that this branch doesn't have yet (what a pull brings). */
 async function gitIncoming($: Engine, cwd: string) {
   return $.process.run(
-    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-20', '--no-show-signature', '--format=%h%x1f%H%x1f%s%x1f%cr%x1f%an%x1e', 'HEAD..@{upstream}', '--'],
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-20', '--no-show-signature', '--format=%h%x00%H%x00%s%x00%cr%x00%an%x00', 'HEAD..@{upstream}', '--'],
     GIT_OPTIONS,
   )
 }
@@ -252,7 +259,7 @@ async function gitIncoming($: Engine, cwd: string) {
 /** Up to 20 commits on this branch that the upstream doesn't have yet (what a push sends). */
 async function gitOutgoing($: Engine, cwd: string) {
   return $.process.run(
-    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-20', '--no-show-signature', '--format=%h%x1f%H%x1f%s%x1f%cr%x1f%an%x1e', '@{upstream}..HEAD', '--'],
+    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'log', '-20', '--no-show-signature', '--format=%h%x00%H%x00%s%x00%cr%x00%an%x00', '@{upstream}..HEAD', '--'],
     GIT_OPTIONS,
   )
 }
@@ -274,9 +281,9 @@ async function gitAheadBehind($: Engine, cwd: string) {
 }
 
 /** The changed files, NUL-separated so any file name reads back whole. */
-async function gitChangedFiles($: Engine, cwd: string) {
+async function gitChangedFiles($: Engine, cwd: string, filterOff: readonly string[]) {
   return $.process.run(
-    ['git', ...SAFE_GIT_ARGS, '-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=all'],
+    ['git', ...SAFE_GIT_ARGS, ...filterOff, '-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=all'],
     GIT_OPTIONS,
   )
 }
@@ -344,7 +351,7 @@ async function loadDetail($: Engine, path: string) {
       gitOutgoing($, path),
       gitUpstreamName($, path),
       gitAheadBehind($, path),
-      canReadStatus ? gitChangedFiles($, path) : Promise.resolve(null),
+      canReadStatus ? gitChangedFiles($, path, filterOffArgs(allFilterNames(filters.stdout))) : Promise.resolve(null),
       gitStashCount($, path),
       lastFetchAge($, path),
     ])
@@ -408,13 +415,37 @@ async function listDir($: Engine, walk: Walk, path: string) {
 }
 
 /** A text file's content, or '' when it is missing or unreadable. */
-async function readText($: Engine, path: string): Promise<string> {
+/**
+ * A text file for the pre-git checks: 'missing' when it isn't there, 'refused' when it is
+ * there but is no plain regular file of sane size or can't be read (the checks treat that
+ * as unsafe: git would still read it), else its text.
+ */
+async function readCheckFile($: Engine, path: string): Promise<{ state: 'missing' } | { state: 'refused' } | { state: 'ok'; text: string }> {
+  if (!(await $.fs.exists(path).catch(() => true))) return { state: 'missing' }
+  if (await isLinkEntry($, path)) return { state: 'refused' }
   try {
+    const stat = await $.fs.stat(path)
+    if (stat.kind !== 'file' || stat.size > MAX_READ_BYTES) return { state: 'refused' }
     const content = await $.fs.read(path)
-    return typeof content === 'string' ? content : ''
+    return typeof content === 'string' ? { state: 'ok', text: content } : { state: 'refused' }
   } catch {
-    return ''
+    return { state: 'refused' }
   }
+}
+
+/** A text file's content, or '' when it is missing, refused or unreadable (display uses only). */
+async function readText($: Engine, path: string): Promise<string> {
+  const file = await readCheckFile($, path)
+  return file.state === 'ok' ? file.text : ''
+}
+
+/** Whether `path` itself is a symbolic link, read from its folder's listing (which never follows it). */
+async function isLinkEntry($: Engine, path: string): Promise<boolean> {
+  const name = baseName(path)
+  const entries = await $.fs.list(parentOf(path)).catch(() => null)
+  if (!entries) return false
+  const entry = entries.find(e => e.name.toLowerCase() === name.toLowerCase())
+  return entry ? entry.isLink || entry.kind === 'other' : false
 }
 
 /** Resolves `target` against `base` unless it is absolute already. */
@@ -422,30 +453,142 @@ function resolveFrom(base: string, target: string): string {
   return /^([A-Za-z]:[\\/]|[\\/])/.test(target) ? target : joinPath(base, target)
 }
 
+/** How deep git itself follows includes and alternates; a chain past this is refused. */
+const MAX_CHAIN = 5
+/** Per repository: config/alternates files read before git runs, and their size cap. */
+const MAX_CHECK_FILES = 64
+const MAX_READ_BYTES = 1_048_576
+/** Per repository: folder listings spent looking for links inside the git folders. */
+const MAX_LINK_LISTINGS = 400
+
+/** One repository's pre-git check: files already seen, and how many were read. */
+type Check = { seen: Set<string>; reads: number; listings: number }
+
+/** Counts a file against the budget; false (fail closed) once the budget is spent. */
+function withinBudget(check: Check, file: string): boolean | 'seen' {
+  const key = file.replace(/\\/g, '/').toLowerCase()
+  if (check.seen.has(key)) return 'seen'
+  check.seen.add(key)
+  check.reads++
+  return check.reads <= MAX_CHECK_FILES
+}
+
+/**
+ * Whether a git config file, or any file it includes, holds a value that is a network
+ * path (include.path, includeIf, core.worktree, core.excludesFile, core.attributesFile, or
+ * any other). Read as text, never through git. A value written in a form this simple
+ * reader might decode differently from git (quotes, backslashes, comment marks, line
+ * continuations) fails closed when it is an include path.
+ */
+async function configReachesNetwork($: Engine, check: Check, file: string, depth: number): Promise<boolean> {
+  if (depth > MAX_CHAIN) return true
+  const budget = withinBudget(check, file)
+  if (budget === 'seen') return false
+  if (!budget) return true
+  const read = await readCheckFile($, file)
+  if (read.state === 'missing') return false
+  if (read.state === 'refused') return true
+  const values = configValues(read.text)
+  if (values.some(v => isNetworkPath(v.value) || isNetworkPath(v.loose))) return true
+  for (const v of values) {
+    if (!v.isIncludePath) continue
+    if (v.isOdd) return true
+    if (!v.value || v.value.startsWith('~')) continue
+    const included = resolveFrom(parentOf(file), v.value)
+    if (await isLinkEntry($, included)) return true
+    if (await configReachesNetwork($, check, included, depth + 1)) return true
+  }
+  return false
+}
+
+/**
+ * Whether an objects folder's alternates, followed as git follows them (relative to that
+ * objects folder, up to MAX_CHAIN deep), reach a network path. A quoted line (git C-unquotes
+ * it) or a linked entry fails closed.
+ */
+async function alternatesReachNetwork($: Engine, check: Check, objectsDir: string, depth: number): Promise<boolean> {
+  if (depth > MAX_CHAIN) return true
+  const budget = withinBudget(check, objectsDir)
+  if (budget === 'seen') return false
+  if (!budget) return true
+  const read = await readCheckFile($, joinPath(objectsDir, 'info/alternates'))
+  if (read.state === 'missing') return false
+  if (read.state === 'refused') return true
+  for (const line of read.text.split(/\r?\n/)) {
+    const entry = line.trim()
+    if (!entry || entry.startsWith('#')) continue
+    if (entry.startsWith('"') || isNetworkPath(entry)) return true
+    const target = resolveFrom(objectsDir, entry)
+    if (await isLinkEntry($, target)) return true
+    if (await alternatesReachNetwork($, check, target, depth + 1)) return true
+  }
+  return false
+}
+
+/**
+ * Whether any entry git reads for this pane's commands is a symbolic link (a link can point
+ * at a share, and following it would reach that host): the git folder itself and its info,
+ * refs, logs, worktrees, objects/info and objects/pack folders, walked without following
+ * links. A walk past its budget fails closed.
+ */
+async function linksInside($: Engine, check: Check, gitDir: string): Promise<boolean> {
+  const queue: [string, number][] = [[gitDir, 0]]
+  const deepInto = new Set(['refs', 'logs', 'worktrees', 'info'])
+  while (queue.length > 0) {
+    const [dir, level] = queue.shift()!
+    check.listings++
+    if (check.listings > MAX_LINK_LISTINGS) return true
+    const entries = await $.fs.list(dir).catch(() => null)
+    if (!entries) continue
+    for (const entry of entries) {
+      if (entry.isLink || entry.kind === 'other') return true
+      if (entry.kind !== 'dir') continue
+      const child = joinPath(dir, entry.name)
+      if (level === 0 && entry.name === 'objects') {
+        queue.push([joinPath(child, 'info'), 2], [joinPath(child, 'pack'), 2])
+        // the objects folder's own entries (loose object folders) are listed once, not walked
+        const objects = await $.fs.list(child).catch(() => null)
+        check.listings++
+        if (objects?.some(o => o.isLink || o.kind === 'other')) return true
+      } else if (level === 0 ? deepInto.has(entry.name) : level < 8) {
+        queue.push([child, level + 1])
+      }
+    }
+  }
+  return false
+}
+
 /**
  * Whether running git in this repository could reach another machine, read from the files
- * alone before git ever runs there: the `.git` file's gitdir, the git folder's real path
- * (a symlink or junction can point at a share), its `commondir`, and the object
- * `alternates` of both the git folder and the shared one. Any network path means yes.
+ * alone before git ever runs there: the `.git` file's gitdir, the git folder's real path,
+ * its `commondir`, links inside the git folders, the config files of both folders with
+ * everything they include, and the object alternates of both. Any network path means yes;
+ * so does a chain deeper than git would follow, an unreadable or oversized file git would
+ * still read, or a check that runs out of budget.
  */
 async function reachesNetwork($: Engine, repoPath: string, isGitFile: boolean, gitFile: string): Promise<boolean> {
   const declared = isGitFile ? gitFile.replace(/^gitdir:\s*/i, '').trim() : '.git'
-  if (!declared || isNetworkPath(declared)) return true
+  if (!declared || isNetworkPath(declared) || declared.startsWith('"')) return true
   const gitDir = resolveFrom(repoPath, declared)
+  if (await isLinkEntry($, gitDir)) return true
   const real = await $.fs.stat(gitDir, { resolve: true }).catch(() => undefined)
   if (real?.realPath && isNetworkPath(real.realPath)) return true
   const local = real?.realPath ?? gitDir
-  const commonRaw = (await readText($, joinPath(local, 'commondir'))).trim()
-  if (commonRaw && isNetworkPath(commonRaw)) return true
+  const commondir = await readCheckFile($, joinPath(local, 'commondir'))
+  if (commondir.state === 'refused') return true
+  const commonRaw = commondir.state === 'ok' ? commondir.text.trim() : ''
+  if (commonRaw && (isNetworkPath(commonRaw) || commonRaw.startsWith('"'))) return true
   const common = commonRaw ? resolveFrom(local, commonRaw) : local
+  if (commonRaw && (await isLinkEntry($, common))) return true
   const commonReal = await $.fs.stat(common, { resolve: true }).catch(() => undefined)
   if (commonReal?.realPath && isNetworkPath(commonReal.realPath)) return true
-  for (const dir of new Set([local, commonReal?.realPath ?? common])) {
-    const alternates = await readText($, joinPath(dir, 'objects/info/alternates'))
-    for (const line of alternates.split(/\r?\n/)) {
-      const entry = line.trim()
-      if (entry && !entry.startsWith('#') && isNetworkPath(entry)) return true
-    }
+  const shared = commonReal?.realPath ?? common
+  const check: Check = { seen: new Set(), reads: 0, listings: 0 }
+  for (const dir of new Set([local, shared])) {
+    if (await linksInside($, check, dir)) return true
+    if (await configReachesNetwork($, check, joinPath(dir, 'config'), 0)) return true
+    if (await configReachesNetwork($, check, joinPath(dir, 'config.worktree'), 0)) return true
+    if (await alternatesReachNetwork($, check, joinPath(dir, 'objects'), 0)) return true
   }
   return false
 }
@@ -624,7 +767,7 @@ async function copyPath($: Engine, path: string, surface: UiPressArgument['surfa
 /** Puts text on the clipboard of the surface that asked, and says so. */
 async function copyText($: Engine, text: string, surface: UiPressArgument['surface']) {
   const result = await $.ui.copy({ text, surface })
-  if (result.isCopied) $.ui.toast(T.copied(text.length > 48 ? `${text.slice(0, 47)}…` : text))
+  if (result.isCopied) $.ui.toast(T.copied(shorten(clean(text), 48)))
 }
 
 /** A pressed row link: scan from that folder, or copy its path. */
@@ -955,8 +1098,8 @@ export const register: Register = (on, options) => {
             d.filesTotal > 0 ? (
               <Box key="files" flexDirection="column">
                 {heading(T.sectionChanges, String(d.filesTotal))}
-                {d.files.map(f => (
-                  <Box key={`file:${f.path}`} flexDirection="row" {...hoverRow}>
+                {d.files.map((f, i) => (
+                  <Box key={`file:${i}`} flexDirection="row" {...hoverRow}>
                     <Box flexGrow={1} flexShrink={1} minWidth={0}>
                       <Text {...rt({ size: 'caption' })} wrap="truncate-middle">
                         <Text color={fileColor(f.code)} {...rt({ mono: true })}>
@@ -965,7 +1108,7 @@ export const register: Register = (on, options) => {
                         {f.path}
                       </Text>
                     </Box>
-                    {copySlot(`copy-file:${f.path}`, f.path)}
+                    {copySlot(`copy-file:${i}`, f.raw)}
                   </Box>
                 ))}
                 {d.filesTotal > d.files.length ? (

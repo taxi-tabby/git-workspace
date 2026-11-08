@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, supportsRichText, actionHref, actionOf, parseCommitLines, parseChangedFiles, elapsed, parseAheadBehind, isNetworkPath, clean, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
+import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, supportsRichText, actionHref, actionOf, parseCommitLines, parseChangedFiles, elapsed, parseAheadBehind, isNetworkPath, clean, configValues, allFilterNames, filterOffArgs, shorten, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
 import type { RawNode } from '../hooks/tree'
 
 const repo = (path: string, children: RawNode[] = []): RawNode => ({
@@ -75,17 +75,27 @@ test('parsers', async () => {
   expect(actionHref('/home/me/x', 'copy')).toBe('file:///home/me/x#copy')
   expect(actionOf(actionHref('D:\\x', 'copy'))).toBe('copy')
   expect(actionOf('https://example.com')).toBeNull()
-  expect(parseCommitLines('a1\x1fa1full\x1fsubj\x1f2 h ago\x1fme\x1e\nb2\x1fb2full\x1fother\x1f3 d ago\x1fyou\x1e')).toEqual([
-    { hash: 'a1', full: 'a1full', subject: 'subj', age: '2 h ago', author: 'me' },
-    { hash: 'b2', full: 'b2full', subject: 'other', age: '3 d ago', author: 'you' },
+  expect(parseCommitLines('a1a1\x00a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\x00subj\x002 h ago\x00me\x00\nb2b2\x00b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\x00other\x003 d ago\x00you\x00')).toEqual([
+    { hash: 'a1a1', full: 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', subject: 'subj', age: '2 h ago', author: 'me' },
+    { hash: 'b2b2', full: 'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2', subject: 'other', age: '3 d ago', author: 'you' },
   ])
-  expect(parseChangedFiles(' M a.ts\0R  new.ts\0old.ts\0?? c.md\0')).toEqual([
-    { code: ' M', path: 'a.ts' },
-    { code: 'R ', path: 'new.ts' },
-    { code: '??', path: 'c.md' },
+  expect(parseChangedFiles(' M a.ts\x00R  new.ts\x00old.ts\x00?? c.md\x00')).toEqual([
+    { code: ' M', path: 'a.ts', raw: 'a.ts' },
+    { code: 'R ', path: 'new.ts', raw: 'new.ts' },
+    { code: '??', path: 'c.md', raw: 'c.md' },
   ])
+  // a subject holding the old separators cannot forge a second commit any more
+  expect(parseCommitLines('aaaa\x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x00real\x1e\ndeadbee\x1fdddddddddddddddddddddddddddddddddddddddd\x1ffake\x00now\x00me\x00').length).toBe(1)
+  // a record whose hashes are not hex is dropped
+  expect(parseCommitLines('zz\x00zz\x00s\x00a\x00b\x00')).toEqual([])
+  // trusted global drivers are listed too, so they can be switched off for status
+  expect(allFilterNames('system\tfilter.lfs.clean\nglobal\tfilter.lfs.process\nlocal\tfilter.x.y.smudge')).toEqual(['lfs', 'x.y'])
+  expect(filterOffArgs(['lfs'])).toEqual(['-c', 'filter.lfs.process=', '-c', 'filter.lfs.clean=', '-c', 'filter.lfs.smudge=', '-c', 'filter.lfs.required=false'])
+  expect(clean('a\u00adb\u3164c\u2028d\u{e0041}e\ufe0f')).toBe('abcde')
+  expect(shorten('😀'.repeat(10), 4)).toBe('😀😀😀…')
+  expect(() => actionHref('D:\\x\ud800y', 'scan')).not.toThrow()
   // a worktree-side rename is followed by its original path too
-  expect(parseChangedFiles(' R new.ts\0old.ts\0 M a.ts\0').map(f => f.path)).toEqual(['new.ts', 'a.ts'])
+  expect(parseChangedFiles(' R new.ts\x00old.ts\x00 M a.ts\x00').map(f => f.path)).toEqual(['new.ts', 'a.ts'])
   expect(parseAheadBehind('3\t5\n')).toEqual({ ahead: 3, behind: 5 })
   expect(parseAheadBehind('fatal: no upstream')).toBeNull()
   expect(isNetworkPath('\\\\host\\share\\.git')).toBe(true)
@@ -94,6 +104,19 @@ test('parsers', async () => {
   expect(isNetworkPath('.git')).toBe(false)
   // bidi and zero-width marks are stripped, so a name cannot reorder what is shown
   expect(clean('evil\u202etxt.exe\u200b')).toBe('eviltxt.exe')
+  expect(configValues('[include]\n\tpath = a.cfg\n[includeIf "gitdir:x/"]\n  path = "b.cfg" ; note\n[core]\n\tworktree = //h/s\n'))
+    .toEqual([
+      { value: 'a.cfg', loose: 'a.cfg', isIncludePath: true, isOdd: false },
+      { value: 'b.cfg', loose: 'b.cfg ; note', isIncludePath: true, isOdd: false },
+      { value: '//h/s', loose: '//h/s', isIncludePath: false, isOdd: false },
+    ])
+  // forms git may decode differently are flagged: escapes, partial quotes, glued comments, continuations
+  for (const odd of ['p\\\\ath', 'a"b"', 'x#y', 'line\\']) {
+    expect(configValues(`[include]\n\tpath = ${odd}\n`)[0]?.isOdd).toBe(true)
+  }
+  // a quoted, escaped share is still seen as a share by the loose reading
+  expect(isNetworkPath(configValues('[core]\n\tworktree = "\\\\\\\\h\\\\s"\n')[0]!.loose)).toBe(true)
+  expect(isNetworkPath('\\??\\UNC\\h\\s')).toBe(true)
   expect(elapsed(0, 59 * 60_000)).toEqual({ value: 59, unit: 'm' })
   expect(elapsed(0, 3 * 3_600_000)).toEqual({ value: 3, unit: 'h' })
   expect(elapsed(0, 72 * 3_600_000)).toEqual({ value: 3, unit: 'd' })

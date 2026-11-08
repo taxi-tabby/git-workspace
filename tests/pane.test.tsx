@@ -16,7 +16,7 @@ const PANE = {
 } as const
 
 // A fake disk: /ws (folder) holds app (repo, which holds lib, a repo) and group/x (repo).
-const DIRS: Record<string, { name: string; kind: 'dir' | 'file' }[]> = {
+const DIRS: Record<string, { name: string; kind: 'dir' | 'file' | 'other' }[]> = {
   '/ws': [{ name: 'app', kind: 'dir' }, { name: 'group', kind: 'dir' }],
   '/ws/app': [{ name: '.git', kind: 'dir' }, { name: 'lib', kind: 'dir' }],
   '/ws/app/lib': [{ name: '.git', kind: 'dir' }],
@@ -38,7 +38,7 @@ type On = Parameters<TestBody>[1]
 const fakeHost = (
   on: On,
   gitVersion: string | null,
-  disk: { dirs?: typeof DIRS; files?: Record<string, string>; ran?: string[] } = {},
+  disk: { dirs?: typeof DIRS; files?: Record<string, string>; ran?: string[]; filters?: string } = {},
 ) => {
   const dirs = disk.dirs ?? DIRS
 
@@ -46,8 +46,24 @@ const fakeHost = (
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('clock.every', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('fs.stat', () => ({ value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: '/ws' } }))
-  on('fs.exists', () => ({ value: true }))
+  on('fs.stat', (_, e) => {
+    const file = disk.files?.[norm(e.path)]
+    return {
+      value: {
+        kind: file === undefined ? 'dir' : 'file',
+        size: file?.length ?? 0,
+        mtimeMs: 0,
+        isLink: false,
+        realPath: norm(e.path).startsWith('/ws') ? norm(e.path) : '/ws',
+      },
+    }
+  })
+  on('fs.exists', (_, e) => {
+    const n = norm(e.path)
+    const cut = n.lastIndexOf('/')
+    const inParent = (dirs[n.slice(0, cut)] ?? []).some(d => d.name === n.slice(cut + 1))
+    return { value: n === '/ws' || !n.startsWith('/ws') || n in dirs || disk.files?.[n] !== undefined || inParent }
+  })
   on('store.get', () => ({ value: ['D:/old/place'] }))
   on('fs.list', (_, e) => ({
     value: (dirs[norm(e.path)] ?? []).map(d => ({ ...d, size: 0, mtimeMs: 0, isLink: false })),
@@ -68,16 +84,16 @@ const fakeHost = (
     const answer = (stdout: string, exitCode = 0) => ({
       value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     })
-    if (args.includes(' config ')) return answer('', 1)
-    if (args.includes(' status --porcelain=v1 ')) return answer(' M src/app.ts\0?? notes.md\0R  new.ts\0old.ts\0')
+    if (args.includes(' config ')) return disk.filters ? answer(disk.filters) : answer('', 1)
+    if (args.includes(' status --porcelain=v1 ')) return answer(' M src/app.ts\x00?? notes.md\x00R  new.ts\x00old.ts\x00')
     if (args.includes(' status ')) return answer(STATUS)
-    if (args.includes(' @{upstream}..HEAD ')) return answer('def5678\x1fdef5678000000000000000000000000000000000\x1fadd the feature\x1f1 hour ago\x1fme\x1e')
+    if (args.includes(' @{upstream}..HEAD ')) return answer('def5678\x00def5678000000000000000000000000000000000\x00add the feature\x001 hour ago\x00me\x00')
     if (args.includes(' HEAD..@{upstream} ')) return answer('')
     if (args.includes(' --abbrev-ref --symbolic-full-name @{upstream}')) return answer('origin/main\n')
     if (args.includes(' rev-list --left-right --count ')) return answer('1\t0\n')
     if (args.includes(' rev-parse --git-dir --git-common-dir')) return answer('.git\n.git\n')
-    if (args.includes(' log -8 ')) return answer('def5678\x1fdef5678000000000000000000000000000000000\x1fadd the feature\x1f1 hour ago\x1fme\x1eabc1234\x1fabc1234000000000000000000000000000000000\x1finit\x1f2 days ago\x1fme\x1e')
-    if (args.includes(' log ')) return answer('abc1234 init\x1f2 days ago')
+    if (args.includes(' log -8 ')) return answer('def5678\x00def5678000000000000000000000000000000000\x00add the feature\x001 hour ago\x00me\x00\nabc1234\x00abc1234000000000000000000000000000000000\x00init\x002 days ago\x00me\x00')
+    if (args.includes(' log ')) return answer('abc1234 init\x002 days ago')
     if (args.includes(' rev-list ')) return answer('', 128)
     if (args.includes(' rev-parse --git-common-dir')) return answer('.git\n')
     return answer('')
@@ -229,7 +245,7 @@ test('the copy link on a commit copies its full hash', async ($, on) => {
   await ui.press({ key: 'refresh' })
   await ui.press({ key: 'open:/ws/app/lib' })
   expect(await ui.find({ type: 'Markdown', key: 'copy-hash:recent:def5678' })).toBeTruthy()
-  expect(await ui.find({ type: 'Markdown', key: 'copy-file:src/app.ts' })).toBeTruthy()
+  expect(await ui.find({ type: 'Markdown', key: 'copy-file:0' })).toBeTruthy()
   await ui.press({ key: 'copy-hash:recent:def5678', link: { href: 'file:///ws#copy' } })
   expect(copied).toEqual(['def5678000000000000000000000000000000000'])
   await ui.unmount()
@@ -254,5 +270,77 @@ test('a repository whose git folder is on a network share is listed but never ru
   expect(await ui.find({ type: 'Button', key: 'open:/ws/shared' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'open:/ws/app' })).toBeTruthy()
   expect(ran.some(args => args.includes('/ws/shared'))).toBe(false)
+  await ui.unmount()
+})
+
+test('a repository whose config or alternates reach a network share is never run', async ($, on) => {
+  const ran: string[] = []
+  fakeHost(on, '2.52.0', {
+    dirs: {
+      '/ws': [{ name: 'app', kind: 'dir' }, { name: 'incl', kind: 'dir' }, { name: 'alt', kind: 'dir' }],
+      '/ws/app': [{ name: '.git', kind: 'dir' }],
+      '/ws/incl': [{ name: '.git', kind: 'dir' }],
+      '/ws/alt': [{ name: '.git', kind: 'dir' }],
+    },
+    files: {
+      // an include two files deep whose value is a share
+      '/ws/incl/.git/config': '[core]\n\tbare = false\n[include]\n\tpath = extra.cfg\n',
+      '/ws/incl/.git/extra.cfg': '[core]\n\texcludesFile = "\\\\\\\\evil\\\\share\\\\x"\n',
+      // a relative alternate whose own alternates point at a share
+      '/ws/alt/.git/objects/info/alternates': '../../../app/.git/objects\n',
+      '/ws/app/.git/objects/info/alternates': '//evil/share/objects\n',
+    },
+    ran,
+  })
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(ran.some(args => args.includes('/ws/incl'))).toBe(false)
+  expect(ran.some(args => args.includes('/ws/alt'))).toBe(false)
+  // app's own alternates reach the share too, so it is skipped as well
+  expect(ran.some(args => args.includes('/ws/app'))).toBe(false)
+  expect(await ui.find({ type: 'Button', key: 'open:/ws/incl' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('status runs with every filter driver switched off, trusted global ones included', async ($, on) => {
+  const ran: string[] = []
+  fakeHost(on, '2.52.0', { ran, filters: 'global\tfilter.lfs.process\nsystem\tfilter.lfs.clean\n' })
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  const statuses = ran.filter(args => args.includes(' status --porcelain=v2 '))
+  expect(statuses.length).toBeGreaterThan(0)
+  for (const args of statuses) expect(args).toContain('-c filter.lfs.process= -c filter.lfs.clean= -c filter.lfs.smudge= -c filter.lfs.required=false')
+  await ui.unmount()
+})
+
+test('an oversized config, a link inside .git, or an odd include path fails closed', async ($, on) => {
+  const ran: string[] = []
+  fakeHost(on, '2.52.0', {
+    dirs: {
+      '/ws': [{ name: 'big', kind: 'dir' }, { name: 'linked', kind: 'dir' }, { name: 'odd', kind: 'dir' }, { name: 'ok', kind: 'dir' }],
+      '/ws/big': [{ name: '.git', kind: 'dir' }],
+      '/ws/big/.git': [{ name: 'config', kind: 'file' }],
+      '/ws/linked': [{ name: '.git', kind: 'dir' }],
+      '/ws/linked/.git': [{ name: 'HEAD', kind: 'other' }],
+      '/ws/odd': [{ name: '.git', kind: 'dir' }],
+      '/ws/odd/.git': [{ name: 'config', kind: 'file' }],
+      '/ws/ok': [{ name: '.git', kind: 'dir' }],
+    },
+    files: {
+      // git reads the whole file; the pane refuses past 1 MB, so the repository is skipped
+      '/ws/big/.git/config': '#'.repeat(1_100_000) + '\n[include]\n\tpath = //evil/x\n',
+      '/ws/odd/.git/config': '[include]\n\tpath = "a"\\\\evil\n',
+    },
+    ran,
+  })
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  for (const name of ['big', 'linked', 'odd']) {
+    expect(ran.some(args => args.includes(`/ws/${name}`))).toBe(false)
+  }
+  expect(ran.some(args => args.includes('/ws/ok'))).toBe(true)
   await ui.unmount()
 })

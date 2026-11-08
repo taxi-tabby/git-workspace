@@ -31,8 +31,22 @@ export const baseName = (path: string): string => {
 
 /** Strip C0/C1 control characters (terminal escape sequences) from repo-derived text. */
 export const clean = (text: string): string =>
-  // control characters, and bidi / zero-width marks that could reorder or hide what is shown
-  text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '')
+  // control and format characters (bidi marks, zero-width, soft hyphen, tags), line and
+  // paragraph separators, invisible letters (Hangul fillers, CGJ, Mongolian selectors) and
+  // variation selectors: anything that could reorder, hide or fake what is shown
+  wellFormed(text).replace(
+    /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u3164\uffa0\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/gu,
+    '',
+  )
+
+/** Replaces lone surrogates (possible in NTFS names) so later string work cannot throw. */
+export const wellFormed = (text: string): string => text.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd')
+
+/** Cuts to `max` code points (never inside a surrogate pair), with an ellipsis. */
+export const shorten = (text: string, max: number): string => {
+  const points = Array.from(text)
+  return points.length > max ? `${points.slice(0, max - 1).join('')}…` : text
+}
 
 /** What a `.git` *file* points at: a linked worktree, a submodule, or a plain gitdir. */
 export const gitKindOfFile = (content: string): GitKind => {
@@ -129,7 +143,7 @@ export const parseGitVersion = (stdout: string): { version: string; isTooOld: bo
 export const actionHref = (path: string, action: 'scan' | 'copy'): string => {
   const parts = path.replace(/\\/g, '/').split('/')
   const encoded = parts
-    .map((part, i) => (i === 0 && /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)))
+    .map((part, i) => (i === 0 && /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(wellFormed(part))))
     .join('/')
     .replace(/[()]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
   const rooted = encoded.startsWith('/') ? encoded : `/${encoded}`
@@ -239,18 +253,30 @@ export const subtreeCounts = (rows: readonly TreeNode[]): Map<string, { repos: n
 }
 
 /** Separators for `git log --format`: %x1f between fields, %x1e after each commit. */
-export const LOG_FORMAT = '%h%x1f%H%x1f%s%x1f%cr%x1f%an%x1e'
+export const LOG_FORMAT = '%h%x00%H%x00%s%x00%cr%x00%an%x00'
 
-/** Reads `git log --format=LOG_FORMAT` into commits, control characters stripped. */
-export const parseCommitLines = (stdout: string): CommitLine[] =>
-  stdout
-    .split('\x1e')
-    .map(record => record.replace(/^\s+/, ''))
-    .filter(record => record.includes('\x1f'))
-    .map(record => {
-      const [hash = '', full = '', subject = '', age = '', author = ''] = record.split('\x1f')
-      return { hash: clean(hash), full: clean(full), subject: clean(subject), age: clean(age), author: clean(author) }
+/**
+ * Reads `git log --format=LOG_FORMAT` into commits. Fields and commits are framed by NUL,
+ * which no subject or name can contain, so a crafted message cannot forge a row; a record
+ * whose hashes are not hex is dropped.
+ */
+export const parseCommitLines = (stdout: string): CommitLine[] => {
+  const fields = stdout.split('\0')
+  const out: CommitLine[] = []
+  for (let i = 0; i + 4 < fields.length; i += 5) {
+    const hash = fields[i]!.trim()
+    const full = fields[i + 1]!
+    if (!/^[0-9a-f]{4,64}$/.test(hash) || !/^[0-9a-f]{40,64}$/.test(full)) break
+    out.push({
+      hash,
+      full,
+      subject: clean(fields[i + 2]!),
+      age: clean(fields[i + 3]!),
+      author: clean(fields[i + 4]!),
     })
+  }
+  return out
+}
 
 /**
  * Reads `git status --porcelain=v1 -z` into files. Each entry is "XY path"; a
@@ -263,7 +289,7 @@ export const parseChangedFiles = (stdout: string): ChangedFile[] => {
     const entry = parts[i]!
     if (entry.length < 4) continue
     const code = entry.slice(0, 2)
-    files.push({ code: clean(code), path: clean(entry.slice(3)) })
+    files.push({ code: clean(code), path: clean(entry.slice(3)), raw: wellFormed(entry.slice(3)) })
     // a rename or copy, in the index or the worktree, is followed by its original path
     if ('RC'.includes(code[0]!) || 'RC'.includes(code[1]!)) i++
   }
@@ -280,10 +306,69 @@ export const elapsed = (fromMs: number, nowMs: number): { value: number; unit: '
 }
 
 /** A UNC, device or other double-slash path, which Windows would reach over the network. */
-export const isNetworkPath = (path: string): boolean => /^[\\/]{2}/.test(path.trim())
+export const isNetworkPath = (path: string): boolean => {
+  const p = path.trim().replace(/^"/, '')
+  // \\host\share, //host, \\?\UNC\, \\.\, and the NT form \??\UNC\
+  return /^[\\/]{2}/.test(p) || /^[\\/]\?\?[\\/]/.test(p)
+}
 
 /** Reads `rev-list --left-right --count HEAD...@{upstream}` ("<ahead>\t<behind>"). */
 export const parseAheadBehind = (stdout: string): { ahead: number; behind: number } | null => {
   const m = /^(\d+)\s+(\d+)/.exec(stdout.trim())
   return m ? { ahead: Number(m[1]), behind: Number(m[2]) } : null
 }
+
+/**
+ * Every value in a git config file's text: as this simple reader takes it (`value`), a
+ * looser reading with quotes dropped and doubled backslashes folded (`loose`, for the
+ * network-path test), whether it is an include path (`[include] path` or
+ * `[includeIf "…"] path`), and whether it is written in a form git might decode
+ * differently from this reader (`isOdd`: quotes or backslashes inside it, a comment mark
+ * without a space before it, or a line continuation).
+ */
+export const configValues = (text: string): { value: string; loose: string; isIncludePath: boolean; isOdd: boolean }[] => {
+  const out: { value: string; loose: string; isIncludePath: boolean; isOdd: boolean }[] = []
+  let section = ''
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue
+    const header = /^\[([^\]]*)\]\s*(.*)$/.exec(line)
+    const body = header ? header[2]! : line
+    if (header) section = header[1]!.trim().split(/\s+/)[0]!.toLowerCase()
+    if (!body) continue
+    const kv = /^([A-Za-z][\w-]*)\s*=\s*(.*)$/.exec(body)
+    if (!kv) continue
+    const key = kv[1]!.toLowerCase()
+    const written = kv[2]!
+    const value = written.replace(/\s[#;].*$/, '').trim().replace(/^"(.*)"$/, '$1')
+    const inner = written.replace(/\s[#;].*$/, '').trim()
+    const isWhollyQuoted = /^"[^"\\]*"$/.test(inner)
+    const isOdd =
+      written.endsWith('\\') ||
+      (!isWhollyQuoted && /["\\]/.test(inner)) ||
+      /[^\s][#;]/.test(inner.replace(/^"[^"]*"$/, ''))
+    const loose = written.replace(/"/g, '').replace(/\\\\/g, '\\').trim()
+    out.push({ value, loose, isIncludePath: (section === 'include' || section === 'includeif') && key === 'path', isOdd })
+  }
+  return out
+}
+
+/** Every filter driver named in `config --show-scope --name-only --get-regexp ^filter\\.` output, any scope. */
+export const allFilterNames = (stdout: string): string[] => {
+  const names = new Set<string>()
+  for (const line of stdout.split(/\r?\n/)) {
+    const key = line.split('\t')[1]
+    const m = key ? /^filter\.(.+)\.[^.]+$/i.exec(key) : null
+    if (m?.[1]) names.add(m[1])
+  }
+  return [...names]
+}
+
+/** `-c` options that switch each named filter driver off for one git call. */
+export const filterOffArgs = (names: readonly string[]): string[] =>
+  names.flatMap(name => [
+    '-c', `filter.${name}.process=`,
+    '-c', `filter.${name}.clean=`,
+    '-c', `filter.${name}.smudge=`,
+    '-c', `filter.${name}.required=false`,
+  ])
