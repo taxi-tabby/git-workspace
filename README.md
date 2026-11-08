@@ -102,8 +102,10 @@ Scanned repositories are treated as untrusted. Every call passes
 -c core.askPass= --no-pager --no-optional-locks`. With these, repository config cannot make git
 start another program, and git can use no transport at all. It also sets `GIT_NO_LAZY_FETCH=1`,
 so even a partial clone can't fetch a missing object, and `GIT_TERMINAL_PROMPT=0`, so git never
-prompts. A repository whose `.git` file points at a network path (`\\host\share`) is listed
-but never run and never read. A repository
+prompts. Before git runs in a repository, the pane reads its `.git` file, the git folder's real
+path, `commondir` and `objects/info/alternates`. If any of them points at a network path
+(`\\host\share`, `//host/share`), the repository is listed but git never runs there, details
+included. A repository
 that defines its own filter drivers, or whose config cannot be read, gets its branch shown
 without `git status`. Control characters are stripped from everything shown.
 
