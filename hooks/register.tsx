@@ -38,6 +38,10 @@ const PANE = 'git-workspace'
 let T: Strings = STRINGS.en
 // Text `size` / `weight` / `tabular` arrived after 2.1.296; set from the engine's version at session start
 let richText = false
+// repositories the last scan skipped because their git folder reaches a network path;
+// nothing runs git in them, details included (a reload empties it until the next scan,
+// and session.start scans first)
+let skippedRepos: Set<string> = new Set()
 const STORE_RECENT = 'recentRoots'
 const REFRESH_MS = 60_000
 const GIT_CONCURRENCY = 6
@@ -326,7 +330,7 @@ const emptyDetail = (path: string): RepoDetail => ({
  * open one, so a slower read for another row never lands on it.
  */
 async function loadDetail($: Engine, path: string) {
-  if ((await read($, openRepo)) !== path) return
+  if ((await read($, openRepo)) !== path || skippedRepos.has(path)) return
   await update($, detail, d => (d && d.path === path ? { ...d, isLoading: true } : emptyDetail(path)))
   const next = emptyDetail(path)
   try {
@@ -366,6 +370,7 @@ async function loadDetail($: Engine, path: string) {
 
 /** Opens a repository row's details, or closes them when that row is already open. */
 async function toggleDetail($: Engine, path: string) {
+  if (skippedRepos.has(path)) return
   const current = await read($, openRepo)
   if (current === path) {
     await update($, openRepo, () => '')
@@ -402,6 +407,49 @@ async function listDir($: Engine, walk: Walk, path: string) {
   }
 }
 
+/** A text file's content, or '' when it is missing or unreadable. */
+async function readText($: Engine, path: string): Promise<string> {
+  try {
+    const content = await $.fs.read(path)
+    return typeof content === 'string' ? content : ''
+  } catch {
+    return ''
+  }
+}
+
+/** Resolves `target` against `base` unless it is absolute already. */
+function resolveFrom(base: string, target: string): string {
+  return /^([A-Za-z]:[\\/]|[\\/])/.test(target) ? target : joinPath(base, target)
+}
+
+/**
+ * Whether running git in this repository could reach another machine, read from the files
+ * alone before git ever runs there: the `.git` file's gitdir, the git folder's real path
+ * (a symlink or junction can point at a share), its `commondir`, and the object
+ * `alternates` of both the git folder and the shared one. Any network path means yes.
+ */
+async function reachesNetwork($: Engine, repoPath: string, isGitFile: boolean, gitFile: string): Promise<boolean> {
+  const declared = isGitFile ? gitFile.replace(/^gitdir:\s*/i, '').trim() : '.git'
+  if (!declared || isNetworkPath(declared)) return true
+  const gitDir = resolveFrom(repoPath, declared)
+  const real = await $.fs.stat(gitDir, { resolve: true }).catch(() => undefined)
+  if (real?.realPath && isNetworkPath(real.realPath)) return true
+  const local = real?.realPath ?? gitDir
+  const commonRaw = (await readText($, joinPath(local, 'commondir'))).trim()
+  if (commonRaw && isNetworkPath(commonRaw)) return true
+  const common = commonRaw ? resolveFrom(local, commonRaw) : local
+  const commonReal = await $.fs.stat(common, { resolve: true }).catch(() => undefined)
+  if (commonReal?.realPath && isNetworkPath(commonReal.realPath)) return true
+  for (const dir of new Set([local, commonReal?.realPath ?? common])) {
+    const alternates = await readText($, joinPath(dir, 'objects/info/alternates'))
+    for (const line of alternates.split(/\r?\n/)) {
+      const entry = line.trim()
+      if (entry && !entry.startsWith('#') && isNetworkPath(entry)) return true
+    }
+  }
+  return false
+}
+
 async function readGitFile($: Engine, path: string): Promise<string> {
   try {
     const content = await $.fs.read(joinPath(path, '.git'))
@@ -425,8 +473,8 @@ async function visitDir($: Engine, walk: Walk, path: string, level: number, dept
   const dotGit = entries.find(entry => entry.name === '.git')
   const gitFile = dotGit?.kind === 'file' ? await readGitFile($, path) : ''
   const gitKind: RawNode['gitKind'] = dotGit?.kind === 'file' ? gitKindOfFile(gitFile) : 'repo'
-  // a gitdir on a network share: running git there would reach out to that host
-  if (isNetworkPath(gitFile.replace(/^gitdir:\s*/i, '').trim())) walk.unsafe.add(path)
+  // a git folder on a network share: running git there would reach out to that host
+  if (dotGit && (await reachesNetwork($, path, dotGit.kind === 'file', gitFile))) walk.unsafe.add(path)
   const children: RawNode[] = []
   if (level < depth) {
     const dirs = entries
@@ -482,7 +530,8 @@ async function scanOnce($: Engine) {
     const safePaths = paths.filter(p => !unsafe.has(p))
     const safeInfos = git.problem === 'missing' ? [] : await inspectAll($, safePaths)
     const bySafe = new Map(safePaths.map((p, i) => [p, safeInfos[i]!]))
-    const infos = git.problem === 'missing' ? [] : paths.map(p => bySafe.get(p) ?? { ...emptyRepo(), error: T.networkGitdir })
+    skippedRepos = unsafe
+    const infos = git.problem === 'missing' ? [] : paths.map(p => bySafe.get(p) ?? { ...emptyRepo(), error: T.networkGitdir, isNetworkGitdir: true })
     const byPath = new Map(infos.map((info, i) => [paths[i]!, info]))
     const rows = flatten(tree, byPath)
     await update($, nodes, () => rows)
@@ -969,7 +1018,7 @@ export const register: Register = (on, options) => {
         >
           <Box flexDirection="row" alignItems="center">
             <Box width={SLOT} flexShrink={0} alignItems="center">
-              {isRepo ? (
+              {isRepo && !node.repo?.isNetworkGitdir ? (
                 <Button
                   key={`open:${node.path}`}
                   label={isOpen ? '▾' : '▸'}

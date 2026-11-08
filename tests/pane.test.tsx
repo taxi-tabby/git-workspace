@@ -35,7 +35,13 @@ type On = Parameters<TestBody>[1]
  * Stands for the engine: a fake disk and a fake `git`. `gitVersion` is what
  * `git --version` prints, or null when git cannot start at all.
  */
-const fakeHost = (on: On, gitVersion: string | null) => {
+const fakeHost = (
+  on: On,
+  gitVersion: string | null,
+  disk: { dirs?: typeof DIRS; files?: Record<string, string>; ran?: string[] } = {},
+) => {
+  const dirs = disk.dirs ?? DIRS
+
   on('command.register', () => ({ value: { command: 'git-workspace' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('clock.every', () => ({ value: undefined }))
@@ -44,10 +50,16 @@ const fakeHost = (on: On, gitVersion: string | null) => {
   on('fs.exists', () => ({ value: true }))
   on('store.get', () => ({ value: ['D:/old/place'] }))
   on('fs.list', (_, e) => ({
-    value: (DIRS[norm(e.path)] ?? []).map(d => ({ ...d, size: 0, mtimeMs: 0, isLink: false })),
+    value: (dirs[norm(e.path)] ?? []).map(d => ({ ...d, size: 0, mtimeMs: 0, isLink: false })),
   }))
+  on('fs.read', (_, e) => {
+    const text = disk.files?.[norm(e.path)]
+    if (text === undefined) throw new Error('ENOENT')
+    return { value: text }
+  })
   on('process.run', (_, e) => {
     const args = e.argv.join(' ')
+    disk.ran?.push(args)
     if (args === 'git --version') {
       if (gitVersion === null) throw new Error('spawn git ENOENT')
       return { value: { exitCode: 0, stdout: `git version ${gitVersion}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -220,5 +232,27 @@ test('the copy link on a commit copies its full hash', async ($, on) => {
   expect(await ui.find({ type: 'Markdown', key: 'copy-file:src/app.ts' })).toBeTruthy()
   await ui.press({ key: 'copy-hash:recent:def5678', link: { href: 'file:///ws#copy' } })
   expect(copied).toEqual(['def5678000000000000000000000000000000000'])
+  await ui.unmount()
+})
+
+test('a repository whose git folder is on a network share is listed but never run', async ($, on) => {
+  const ran: string[] = []
+  fakeHost(on, '2.52.0', {
+    dirs: {
+      '/ws': [{ name: 'app', kind: 'dir' }, { name: 'shared', kind: 'dir' }],
+      '/ws/app': [{ name: '.git', kind: 'dir' }],
+      '/ws/shared': [{ name: '.git', kind: 'file' }],
+    },
+    files: { '/ws/shared/.git': 'gitdir: //fileserver/repos/shared.git\n' },
+    ran,
+  })
+  await $.session.start({ cwd: '/ws', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /network path/ })).toBeTruthy()
+  // no details toggle for it, and git never ran in it
+  expect(await ui.find({ type: 'Button', key: 'open:/ws/shared' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'open:/ws/app' })).toBeTruthy()
+  expect(ran.some(args => args.includes('/ws/shared'))).toBe(false)
   await ui.unmount()
 })

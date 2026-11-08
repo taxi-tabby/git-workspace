@@ -15,6 +15,8 @@ export type RepoInfo = {
   /** why `git status` was not run (untrusted filter drivers), or '' */
   warning: string
   error: string
+  /** skipped: its git folder reaches a network path, so git never runs there */
+  isNetworkGitdir?: boolean
 }
 
 /** One row of the tree, in pre-order. `parent` is '' for a top-level row. */
