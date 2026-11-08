@@ -1340,7 +1340,7 @@ export const register: Register = (on, options) => {
         </Box>
 
         {/* WORKSPACE card: where we are and a status bar */}
-        <Box flexDirection="column" gap={sp('md', 1)} {...groupProps}>
+        <Box flexDirection="column" gap={sp('sm', 1)} {...groupProps}>
           {/* 1. where: name and path */}
           <Box flexDirection="column">
             {rootLine}
@@ -1355,33 +1355,36 @@ export const register: Register = (on, options) => {
           </Box>
           {/* 2. the root repository's state */}
           {info.isRootRepo && info.rootRepo ? (
-            <Box flexDirection="column" gap={sp('xs', 0)}>
+            <Box flexDirection="column">
               {summaryLine(info.rootRepo, NAME_INDENT)}
               {info.rootRepo.lastCommit || info.rootRepo.warning ? commitLine(info.rootRepo, NAME_INDENT) : null}
               {rootOpen ? detailPanel(info.rootRepo, openDetail, NAME_INDENT) : null}
             </Box>
           ) : null}
-          {/* 3. everything under it, in one bar and one line */}
-          <Box flexDirection="column" gap={sp('xs', 0)}>
-            {Svg && allRepos.length > 0 ? (
-              <Svg
-                source={statusBar(cleanTotal, dirtyTotal, syncOnly)}
-                alt={T.statusBarAlt(cleanTotal, dirtyTotal, syncOnly)}
-                height={4}
-              />
-            ) : null}
-            {statsText}
+          {/* 3. everything under it, in one bar and one line, on the name's column */}
+          <Box flexDirection="row">
+            {gutter(NAME_INDENT)}
+            <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={sp('xs', 0)}>
+              {Svg && allRepos.length > 0 ? (
+                <Svg
+                  source={statusBar(cleanTotal, dirtyTotal, syncOnly)}
+                  alt={T.statusBarAlt(cleanTotal, dirtyTotal, syncOnly)}
+                  height={4}
+                />
+              ) : null}
+              {statsText}
+              {info.isTruncated ? (
+                <Text {...rt({ size: 'footnote' })} color="warning">
+                  {T.truncated(info.visited)}
+                </Text>
+              ) : null}
+              {info.error ? (
+                <Text {...rt({ size: 'footnote' })} color="error">
+                  {info.error}
+                </Text>
+              ) : null}
+            </Box>
           </Box>
-          {info.isTruncated ? (
-            <Text {...rt({ size: 'footnote' })} color="warning">
-              {T.truncated(info.visited)}
-            </Text>
-          ) : null}
-          {info.error ? (
-            <Text {...rt({ size: 'footnote' })} color="error">
-              {info.error}
-            </Text>
-          ) : null}
         </Box>
 
         {/* git missing or too old: say so plainly, with where to get it */}
