@@ -12,6 +12,13 @@ For each repository you see the current branch (or detached commit), commits to 
 pull (↓), counts of staged (+), modified (~), untracked (?) and conflicted (!) files, and the last
 commit with its age.
 
+<p align="center">
+  <img src="docs/pane.png" width="480" alt="The Git Workspace pane in the Claude desktop app: the session's repository on main, up to date with origin/main, its recent commits with a copy button, and a status bar">
+</p>
+
+Open a repository (▸) to see whether it is up to date with its upstream, what there is to pull
+and push, its changed files and its recent commits, with copy buttons for hashes and paths.
+
 ## Examples
 
 - Open Claude Code in a folder of several projects and see at a glance which ones have
