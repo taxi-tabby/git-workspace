@@ -25,6 +25,9 @@ commit with its age.
 
 - `/git-workspace` opens the pane. `/git-workspace <folder>` scans another folder.
 - The pane scans the session's folder by default, down to 4 levels (adjustable from 1 to 10).
+  That folder stays put when Claude runs `cd` in Bash. When it sits inside a repository,
+  the pane scans that repository from its top (a `.git` in your home folder or a drive's
+  top is never taken).
 - Header buttons: **Refresh** (`r`), **Changed** shows only repositories that need attention
   (`f`), and **Settings** (`p`).
 - **Settings** holds the scan-root field, **Session folder**, **Parent folder**, recent roots,

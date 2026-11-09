@@ -20,6 +20,8 @@ import {
   actionOf,
   elapsed,
   isNetworkPath,
+  ancestorsOf,
+  isHomeOrDriveRoot,
   configValues,
   allFilterNames,
   filterOffArgs,
@@ -648,13 +650,49 @@ function repoPaths(node: RawNode, into: string[] = []): string[] {
   return into
 }
 
-async function sessionDir($: Engine): Promise<string> {
+// The folder the session started in, read once at session.start: the process's '.' moves
+// with every `cd` Claude runs in Bash, and the pane must not wander after it.
+let startDir = ''
+
+/**
+ * The session's own folder, which a shell `cd` never moves: the engine's project root
+ * where the engine has one (it follows `/cd`, a host's directory change, a worktree
+ * move), else the folder the session started in.
+ */
+async function sessionBase($: Engine): Promise<string> {
   try {
-    const cwd = await $.fs.stat('.', { resolve: true })
-    return cwd.realPath ?? '.'
+    const root = await $.session.root()
+    if (root) return root
   } catch {
-    return '.'
+    // an engine without it: fall back to the start folder
   }
+  if (!startDir) {
+    try {
+      startDir = (await $.fs.stat('.', { resolve: true })).realPath ?? '.'
+    } catch {
+      startDir = '.'
+    }
+  }
+  return startDir
+}
+
+/**
+ * Where git means something for `dir`: the repository it sits in (the nearest folder
+ * above with a `.git`), or `dir` itself when it is in none, where the scan shows the
+ * repositories below it. File checks only; a home folder or a drive's top is never
+ * taken (a dotfiles repository is not the workspace), nor is a network path walked.
+ */
+async function gitAnchor($: Engine, dir: string): Promise<string> {
+  if (isNetworkPath(dir)) return dir
+  for (const p of ancestorsOf(dir)) {
+    if (isHomeOrDriveRoot(p) || isNetworkPath(p)) break
+    if (await $.fs.exists(joinPath(p, '.git')).catch(() => false)) return p
+  }
+  return dir
+}
+
+async function sessionDir($: Engine): Promise<string> {
+  return gitAnchor($, await sessionBase($))
 }
 
 async function currentRoot($: Engine): Promise<{ root: string; session: string }> {
@@ -806,6 +844,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     richText = supportsRichText((await $.session.version()).version)
+    // before Claude can `cd` anywhere
+    if (!startDir) await sessionBase($)
     await $.command.register({
       name: 'git-workspace',
       description: T.commandDescription,

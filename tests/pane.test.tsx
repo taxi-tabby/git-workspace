@@ -359,3 +359,15 @@ test('a crafted local filter key makes status skip; it never reaches a -c option
   expect(await ui.find({ type: 'Text', text: /filter driver/ })).toBeTruthy()
   await ui.unmount()
 })
+
+test('a session started below a repository scans that repository, not the subfolder', async ($, on) => {
+  const ran: string[] = []
+  fakeHost(on, '2.52.0', { ran, dirs: { ...DIRS, '/ws/app/src': [], '/ws/app/src/deep': [] } })
+  on('session.root', () => ({ value: '/ws/app/src/deep' }))
+  await $.session.start({ cwd: '/ws/app/src/deep', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /^app$/ })).toBeTruthy()
+  expect(ran.some(a => a.includes('/ws/app/src/deep'))).toBe(false)
+  await ui.unmount()
+})
