@@ -25,6 +25,9 @@ commit with its age.
 
 - `/git-workspace` opens the pane. `/git-workspace <folder>` scans another folder.
 - The pane scans the session's folder by default, down to 4 levels (adjustable from 1 to 10).
+  That folder stays put when Claude runs `cd` in Bash. When it sits inside a repository,
+  the pane scans that repository from its top (a `.git` in your home folder or a drive's
+  top is never taken).
 - Header buttons: **Refresh** (`r`), **Changed** shows only repositories that need attention
   (`f`), and **Settings** (`p`).
 - **Settings** holds the scan-root field, **Session folder**, **Parent folder**, recent roots,
@@ -170,7 +173,9 @@ release, because installed copies update only when it changes.
 ## Contributing
 
 Changes go through pull requests into `main`; CI runs `claude plugin validate --strict` and
-`claude plugin test`, and must pass before a PR can be squash-merged. The PR template lists
+`claude plugin test`, and must pass before a PR can be merged (with a merge commit). A second
+check, `pr-body`, fails while the PR description does not follow the template: every box
+ticked, or N/A on a line that does not apply. The PR template lists
 what to check. Security problems: see [SECURITY.md](SECURITY.md).
 
 ## Support

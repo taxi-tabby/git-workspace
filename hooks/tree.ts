@@ -313,6 +313,30 @@ export const isNetworkPath = (path: string): boolean => {
   return /^[\\/]{2}/.test(p) || /^[\\/]\?\?[\\/]/.test(p)
 }
 
+/** The folder itself, then each folder above it, up to the top of its drive (at most 64). */
+export const ancestorsOf = (path: string): string[] => {
+  const out: string[] = []
+  let p = path
+  while (p && out.length < 64) {
+    out.push(p)
+    const up = parentOf(p)
+    if (up === p || up.replace(/[\\/]+$/, '') === p.replace(/[\\/]+$/, '')) break
+    p = up
+  }
+  return out
+}
+
+/**
+ * A drive's top (`C:\`, `/`) or a user's home folder (`C:\Users\me`, `/home/me`,
+ * `/Users/me`, `/root`): a `.git` there is a dotfiles repository, not the workspace,
+ * so the search for the session's repository stops before it.
+ */
+export const isHomeOrDriveRoot = (path: string): boolean => {
+  const p = path.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (p === '' || /^[A-Za-z]:$/.test(p)) return true
+  return /^(?:[A-Za-z]:)?\/(?:users|home)\/[^/]+$/i.test(p) || /^(?:[A-Za-z]:)?\/root$/i.test(p)
+}
+
 /** Reads `rev-list --left-right --count HEAD...@{upstream}` ("<ahead>\t<behind>"). */
 export const parseAheadBehind = (stdout: string): { ahead: number; behind: number } | null => {
   const m = /^(\d+)\s+(\d+)/.exec(stdout.trim())

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, supportsRichText, actionHref, actionOf, parseCommitLines, parseChangedFiles, elapsed, parseAheadBehind, isNetworkPath, clean, configValues, allFilterNames, filterOffArgs, shorten, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
+import { emptyRepo, flatten, gitKindOfFile, parentOf, parseGitVersion, parseStatus, supportsRichText, actionHref, actionOf, parseCommitLines, parseChangedFiles, elapsed, parseAheadBehind, isNetworkPath, ancestorsOf, isHomeOrDriveRoot, clean, configValues, allFilterNames, filterOffArgs, shorten, subtreeCounts, untrustedFilters, visibleRows } from '../hooks/tree'
 import type { RawNode } from '../hooks/tree'
 
 const repo = (path: string, children: RawNode[] = []): RawNode => ({
@@ -130,4 +130,16 @@ test('parsers', async () => {
   expect(elapsed(0, 59 * 60_000)).toEqual({ value: 59, unit: 'm' })
   expect(elapsed(0, 3 * 3_600_000)).toEqual({ value: 3, unit: 'h' })
   expect(elapsed(0, 72 * 3_600_000)).toEqual({ value: 3, unit: 'd' })
+})
+
+test('the session folder is anchored to the repository it sits in, never a home or drive top', () => {
+  expect(ancestorsOf('D:/ws/app/src')).toEqual(['D:/ws/app/src', 'D:/ws/app', 'D:/ws', 'D:/'])
+  expect(ancestorsOf('/ws/app')).toEqual(['/ws/app', '/ws', '/'])
+  expect(ancestorsOf('C:\\')).toEqual(['C:\\'])
+  for (const top of ['C:\\', 'D:/', '/', 'C:\\Users\\me', '/home/me', '/Users/me', '/root']) {
+    expect(isHomeOrDriveRoot(top)).toBe(true)
+  }
+  for (const not of ['D:/ws', 'C:\\Users\\me\\code', '/home/me/src', 'C:\\Users']) {
+    expect(isHomeOrDriveRoot(not)).toBe(false)
+  }
 })
